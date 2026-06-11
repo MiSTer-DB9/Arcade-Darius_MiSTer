@@ -332,15 +332,16 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 );
 
 // [MiSTer-DB9-Pro BEGIN] - DB controllers muted while OSD is open; joydb_1/2 remuxed into joy0/joy1
-// joydb output bit layout: [3:0]=R/L/D/U, [4]=A, [5]=B, [6]=C, [9]=Z, [10]=Start, [11]=R-trig/Mode
-// Darius consumer (joy0/joy1): [0]=R [1]=L [2]=D [3]=U [4]=Fire(A) [5]=Bomb(B)
+// Layer B: joydb_*_mapped = MiSTer-standard joystick word, slots filled by the
+// programmable remap matrix. Its factory default derives from the loaded game's
+// MRA <buttons> (per game), the same source USB uses, so DB9 tracks USB.
+// Darius consumer (joy0/joy1): [0]=R [1]=L [2]=D [3]=U [4]=Fire [5]=Bomb
 //                              [10]=Start  [11]=Coin  [12]=Pause
-// Map: Fire<-A, Bomb<-B, Start<-Start, Coin<-C(joydb_1[6]), Pause<-Z(joydb_1[9]).
 wire [15:0] joy0 = joydb_1ena ? (OSD_STATUS ? 16'b0
-                 : {3'b0, joydb_1[9], joydb_1[6], joydb_1[10], 4'b0, joydb_1[5], joydb_1[4], joydb_1[3:0]})
+                 : joydb_1_mapped[12:0])
                  : joy0_USB;
 wire [15:0] joy1 = joydb_2ena ? (OSD_STATUS ? 16'b0
-                 : {3'b0, joydb_2[9], joydb_2[6], joydb_2[10], 4'b0, joydb_2[5], joydb_2[4], joydb_2[3:0]})
+                 : joydb_2_mapped[12:0])
                  : joydb_1ena ? joy0_USB : joy1_USB;
 // [MiSTer-DB9-Pro END]
 
