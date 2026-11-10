@@ -31,6 +31,8 @@ module darius_fg_renderer (
 	input  wire        reset,
 	input  wire  [9:0] render_x,
 	input  wire  [8:0] render_y,
+	input  wire  [8:0] render_y_next,   // riga sorgente della riga di display dopo (CRT Shrink); spento = render_y+1
+	input  wire  [8:0] render_y_first,  // prima riga del quadro dopo (CRT Shrink interlacciato); altrimenti 0
 
 	// FG RAM read (via Port B mux)
 	output reg  [13:0] fg_ram_addr,
@@ -86,6 +88,9 @@ end
 
 reg       display_buf_sel;
 reg       prep_buf_sel;
+// prep_line_y e prep_done dichiarati qui: li usa fg_swap_now, prima della FSM
+reg [8:0] prep_line_y;
+reg       prep_done;
 
 // =====================================================================
 // Edge detection
@@ -103,32 +108,28 @@ wire      start_of_line = in_active && (render_y != prev_render_y);
 // extra (mimetico di darius_panel_renderer). Vedi docs/architecture/
 // timing_fix_fg_pipeline.md per dettagli e criteri di verifica.
 // =====================================================================
-reg  [9:0] disp_rd_addr;
 reg  [8:0] linebuf0_q, linebuf1_q;
-reg        disp_valid_r0;
+reg        disp_valid_r;     // 48 MHz: allo stadio del line buffer
 
 wire [9:0] disp_lookup_x = (render_x < (H_ACTIVE - 10'd1))
                             ? (render_x + 10'd1)
                             : (H_ACTIVE - 10'd1);
 
+// 02/11, 48 MHz: tolti lo stadio d'indirizzo e quello del mux (messi per il timing a 96). Il line buffer e' letto
+// con l'indirizzo anticipato di 1 pixel e il valid registrato insieme, poi palette e fg_rgb: 3 registri.
 always @(posedge clk) begin
-	// Stage 1: latch address + valid (rompe path combinatorio render_x → linebuf)
-	disp_rd_addr  <= disp_lookup_x;
-	disp_valid_r0 <= (render_x < H_ACTIVE) && in_active;
-	// Stage 2: BRAM read with registered address
-	linebuf0_q    <= linebuf0[disp_rd_addr];
-	linebuf1_q    <= linebuf1[disp_rd_addr];
+	disp_valid_r  <= (render_x < H_ACTIVE) && in_active;
+	linebuf0_q    <= linebuf0[disp_lookup_x];
+	linebuf1_q    <= linebuf1[disp_lookup_x];
 end
+// 03/11, 48 MHz: nel clock d'inizio riga (start_of_line) il mux usa il buffer che lo scambio carica e la lettura vale,
+// come a 96, dove quella lettura arrivava dopo lo scambio: il pixel 0 prende l'opacita' dal pixel 863 del buffer della
+// nuova riga e il colore dalla voce 0 della palette (stesso risultato del core a 96 MHz, banco tb_chain).
+wire       fg_swap_now = start_of_line && prep_done && (prep_line_y == render_y);
+wire       disp_sel    = fg_swap_now ? prep_buf_sel : display_buf_sel;
+wire [8:0] disp_raw    = disp_sel ? linebuf1_q : linebuf0_q;
 
-reg       disp_valid_r;
-reg [8:0] disp_raw;
-always @(posedge clk) begin
-	// Stage 3: mux + latch (era lo stadio 1 originale)
-	disp_valid_r <= disp_valid_r0;
-	disp_raw     <= display_buf_sel ? linebuf1_q : linebuf0_q;
-end
-
-wire [8:0] disp_entry = disp_valid_r ? disp_raw : 9'd0;
+wire [8:0] disp_entry = (disp_valid_r || start_of_line) ? disp_raw : 9'd0;
 wire [1:0] disp_pixel = disp_entry[1:0];
 wire [6:0] disp_pal   = disp_entry[8:2];
 
@@ -163,8 +164,6 @@ localparam S_NEXT_TILE  = 4'd12;
 reg [3:0]  state;
 reg [9:0]  clear_x;
 reg [8:0]  prep_y;
-reg [8:0]  prep_line_y;
-reg        prep_done;
 reg [6:0]  tile_col;
 reg [15:0] cur_attr;
 reg [15:0] cur_code;
@@ -217,12 +216,12 @@ always @(posedge clk) begin
 			display_buf_sel <= prep_buf_sel;
 			prep_buf_sel    <= ~prep_buf_sel;
 			prep_done       <= 1'b0;
-			next_prep_y     <= render_y + 9'd1;
+			next_prep_y     <= render_y_next;   // spento: render_y+1 come prima (224 dopo l'ultima: fermo fino al VBlank)
 		end
 
 		// VBlank: prepare line 0 for next frame
 		if (vblank_start) begin
-			next_prep_y <= 9'd0;
+			next_prep_y <= render_y_first;   // 0 senza interlacciato
 			prep_done   <= 1'b0;
 		end
 

@@ -44,6 +44,10 @@ module darius_sprite_renderer #(
 	ssbus_if.slave     ssbus,
 	input  wire  [9:0] render_x,
 	input  wire  [8:0] render_y,
+	input  wire  [8:0] render_y_next,   // riga sorgente della riga di display dopo (CRT Shrink); spento = render_y+1
+	input  wire  [8:0] render_y_first,  // prima riga del quadro dopo (CRT Shrink interlacciato); altrimenti 0
+	input  wire  [8:0] render_y_nat,    // riga naturale del quadro (mai compressa): vblank vero per la copia della tabella
+	input  wire  [1:0] snap_mode,       // CRT Shrink: Y arrotondata alla griglia (1 = 1/2, 3 = 1/4; 0 e 2 niente), anche interlacciato
 
 	// X offset (scroll-dependent, from MAME draw_sprites x_offs parameter)
 	input  wire  [9:0] x_offset,
@@ -72,7 +76,7 @@ module darius_sprite_renderer #(
 
 	// Palette lookup (shared with tile palette)
 	input  wire [15:0] pal_data,       // xBGR555 from palette RAM
-	output reg  [10:0] pal_lookup_addr, // {color[6:0], pixel[3:0]}
+	output wire [10:0] pal_lookup_addr, // {color[6:0], pixel[3:0]}; 48 MHz: combinatorio
 
 	// Pixel output
 	// OSD adjustable offsets
@@ -119,8 +123,16 @@ end
 wire sub_wr_pulse = sub_write_active && !sub_write_seen;
 wire sub_spr_wr = sub_wr_pulse && sub_sprite_sel;
 
-// Mux: main has priority if both write same cycle (unlikely)
-wire spr_wr = main_spr_wr || sub_spr_wr;
+// Mux: main has priority if both write in the same cycle; the sub write is then done in the next cycle (02/11),
+// with the sub bus still driving it (a 68000 write keeps address, data and strobes for several clocks), so it is
+// never lost. At 48 MHz the two CPUs' enables can fall in the same clock (at 96 they had twice the positions).
+reg  sub_spr_defer;
+always @(posedge clk) begin
+	if (reset) sub_spr_defer <= 1'b0;
+	else       sub_spr_defer <= main_spr_wr && sub_spr_wr;
+end
+wire sub_spr_wr_eff = (sub_spr_wr && !main_spr_wr) || (sub_spr_defer && sub_write_active && sub_sprite_sel);
+wire spr_wr = main_spr_wr || sub_spr_wr_eff;
 
 // =====================================================================
 // Local sprite RAM (snooped, 1920 words = 480 sprites × 4 words)
@@ -172,21 +184,23 @@ always @(posedge clk) begin
 	spr_ram_ss_q <= {spr_ram_hi[ssob_addr], spr_ram_lo[ssob_addr]};
 end
 
-// Copy LIVE -> FROZEN durante vblank (render_y >= V_ACTIVE). Un'entry/clk,
+// Copy LIVE -> FROZEN durante vblank (render_y_nat >= V_ACTIVE). Un'entry/clk,
 // 0..2047. All'ingresso vblank riparte; al reset copy_done=0 forza la prima
 // copia completa prima di partire in active. Vblank Darius ~38 righe x ~6108
 // clk >> 2048 -> copia sempre completata prima del display.
 reg [10:0] copy_idx;
 reg        copy_done;
 reg  [8:0] prev_render_y_copy;
-wire vblank_copy = (render_y >= V_ACTIVE);
+// 04/11: riga naturale, non render_y: con il CRT Shrink render_y e' 300 fuori dalla finestra e la copia partiva alla fine
+// della finestra (riga 168 con 1/2) invece che al vblank vero (224), quando il gioco aggiorna la tabella.
+wire vblank_copy = (render_y_nat >= V_ACTIVE);
 always @(posedge clk) begin
 	if (reset) begin
 		copy_idx <= 11'd0;
 		copy_done <= 1'b0;
 		prev_render_y_copy <= 9'h1FF;
 	end else begin
-		prev_render_y_copy <= render_y;
+		prev_render_y_copy <= render_y_nat;
 		// ingresso vblank: (ri)parte la copia
 		if (vblank_copy && !(prev_render_y_copy >= V_ACTIVE)) begin
 			copy_idx  <= 11'd0;
@@ -273,7 +287,7 @@ reg [12:0] spr_lb0_q, spr_lb1_q;
 
 reg        spr_disp_sel;     // which buffer is being displayed
 reg [12:0] spr_disp_word;
-reg  [9:0] spr_disp_addr;
+wire [9:0] spr_disp_addr;      // 48 MHz: combinatorio (assegnato sotto)
 
 always @(posedge clk) begin
 	spr_lb0_q <= spr_lb0[spr_disp_addr];
@@ -285,6 +299,7 @@ reg        lb_we;
 reg  [9:0] lb_waddr;
 reg [12:0] lb_wdata;
 reg        lb_buf_sel;  // which buffer is being written (opposite of display)
+wire       new_line;    // dichiarato qui, assegnato sotto (serve al mux di display)
 
 always @(posedge clk) begin
 	if (lb_we) begin
@@ -297,14 +312,13 @@ end
 
 // Display read
 wire in_active = (render_x < H_ACTIVE) && (render_y < V_ACTIVE);
-always @(posedge clk) begin
-	spr_disp_addr <= (render_x < H_ACTIVE - 10'd1) ? render_x + 10'd1 : 10'd0;
-end
+// 02/11, 48 MHz: indirizzo non registrato (era il registro per il timing a 96), stessa lettura anticipata
+assign spr_disp_addr = (render_x < H_ACTIVE - 10'd1) ? render_x + 10'd1 : 10'd0;
 // Combinatorial mux — matches panel renderer pipeline (no extra register stage)
 always @(*) begin
 	if (!in_active)
 		spr_disp_word = 13'd0;
-	else if (spr_disp_sel)
+	else if (new_line ? lb_buf_sel : spr_disp_sel)   // 02/11, 48 MHz: al clock di inizio riga il buffer che lo scambio carica
 		spr_disp_word = spr_lb1_q;
 	else
 		spr_disp_word = spr_lb0_q;
@@ -362,7 +376,7 @@ endfunction
 // max_idx_used->0, stesso spr_get_pixel, stesso line buffer).
 // =====================================================================
 reg  [8:0] prev_render_y;
-wire new_line = in_active && (render_y != prev_render_y);
+assign new_line = in_active && (render_y != prev_render_y);
 
 // ---- FSM di DRAW (consuma la FIFO) ----
 localparam D_IDLE      = 3'd0;
@@ -400,6 +414,23 @@ reg [12:0] sc_code;
 reg        sc_flipx, sc_flipy;
 reg  [6:0] sc_color;
 reg        sc_prio;
+// CRT Shrink (04/11): Y dello sprite arrotondata alla griglia delle righe campionate dalla finestra (anche interlacciato:
+// il campo pari mostra sempre le righe pari dello sprite, il dispari le dispari, mezza riga sotto),
+// cosi' ogni sprite mostra sempre le stesse sue righe in ogni quadro (la nave non va piu' giu' e su). snap_mode: 0 niente,
+// 1 = 1/2 (riga pari), 3 = 1/4 (multiplo di 4 piu' vicino). 1/3 (2) resta senza: la griglia ha passo 3 e gli oggetti sono
+// fatti di pezzi da 16 righe; 16 non e' multiplo di 3, i pezzi scatterebbero in quadri diversi e l'oggetto si spezzerebbe.
+function automatic [8:0] snap_y(input [8:0] sy, input [1:0] m);
+	reg [8:0] t;
+	begin
+		t = sy + 9'd2;
+		case (m)
+			2'd1:    snap_y = {sy[8:1], 1'b0};
+			2'd3:    snap_y = {t[8:2], 2'b00};
+			default: snap_y = sy;
+		endcase
+	end
+endfunction
+
 reg  [3:0] sc_row_diff_hit;
 reg  [3:0] sc_draw_row;
 
@@ -447,7 +478,7 @@ always @(posedge clk) begin
 		// Start scan quando il draw inizia a preparare una nuova linea (D_CLEAR).
 		// sc_line_y = prep_line_y latchata; mf_w azzerato = FIFO ripartita per la linea.
 		if (new_line) begin
-			sc_line_y <= (render_y >= V_ACTIVE - 9'd1) ? 9'd0 : render_y + 9'd1;
+			sc_line_y <= (render_y_next >= V_ACTIVE) ? render_y_first : render_y_next;   // spento: = (render_y >= 223) ? 0 : render_y+1
 			sc_idx    <= max_idx_used;
 			mf_w      <= 7'd0;
 			sc_run    <= 1'b1;
@@ -467,7 +498,7 @@ always @(posedge clk) begin
 					reg [8:0] sy_calc;
 					reg [8:0] row_diff;
 					sy_calc = (9'd256 - spr_rdata[8:0] - 9'd16 + spr_yoff[8:0]) & 9'h1FF;
-					row_diff = (sc_line_y - sy_calc) & 9'h1FF;
+					row_diff = (sc_line_y - snap_y(sy_calc, snap_mode)) & 9'h1FF;   // 0 = Y invariata
 					if (row_diff < 9'd16) begin
 						sc_row_diff_hit <= row_diff[3:0];
 						spr_rd_addr     <= {sc_idx, 2'b01};
@@ -555,7 +586,7 @@ always @(posedge clk) begin
 		if (new_line) begin
 			spr_disp_sel <= lb_buf_sel;
 			lb_buf_sel   <= ~lb_buf_sel;
-			prep_line_y  <= (render_y >= V_ACTIVE - 9'd1) ? 9'd0 : render_y + 9'd1;
+			prep_line_y  <= (render_y_next >= V_ACTIVE) ? render_y_first : render_y_next;   // idem
 			clear_addr   <= 0;
 			mf_r         <= 7'd0;   // riparte a drenare la FIFO della nuova linea
 			draw_state   <= D_CLEAR;
@@ -652,9 +683,8 @@ wire       disp_prio  = spr_disp_word[11];
 wire       disp_hit   = (disp_pixel != 4'd0) && in_active;
 
 // Register palette address (1 cycle latency)
-always @(posedge clk) begin
-	pal_lookup_addr <= {disp_color, disp_pixel};
-end
+// 02/11, 48 MHz: indirizzo della palette combinatorio; il registro resta sprite_pal_data in darius_dual68k_top
+assign pal_lookup_addr = {disp_color, disp_pixel};
 
 // Delay opaque/prio by 2 clocks to align with pal_data:
 //   Cycle N:   spr_disp_word available (combinatorial)
@@ -676,8 +706,8 @@ wire [7:0] out_g = {pal_data[9:5],  pal_data[9:7]};
 wire [7:0] out_b = {pal_data[14:10], pal_data[14:12]};
 
 assign sprite_rgb    = {out_r, out_g, out_b};
-assign sprite_prio   = {1'b0, disp_prio_dd};
-assign sprite_opaque = disp_hit_dd;
+assign sprite_prio   = {1'b0, disp_prio_d};    // 48 MHz: un registro dopo spr_disp_word, come sprite_pal_data
+assign sprite_opaque = disp_hit_d;
 assign dbg_disp_word = spr_disp_word;
 
 endmodule

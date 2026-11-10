@@ -1,14 +1,14 @@
-/*  This file is part of BoogieWings_MiSTer.
+/*  This file is part of Darius_MiSTer.
     GPL-3.
     Original author: Martin Donlon (wickerwaka) — Arcade-TaitoF2 savestate system.
-    Modified/adapted for BoogieWings by: Umberto Parisi (rmonc79)
+    Modified/adapted by: Umberto Parisi (rmonic79)
 */
 
 //============================================================================
-//  BoogieWings Savestate — ddr_if interface
-//  Portato da _reference/taitof2_ss/ddram.sv (Martin Donlon).
+//  Savestate — ddr_if interface
+//  Portato da ddram.sv di Arcade-TaitoF2 (Martin Donlon).
 //  ddr_if mappa 1:1 sui segnali DDRAM_* MiSTer.
-//  NB: ddr_mux dell'originale RIMOSSO — su BoogieWings il mux DDR è fatto a mano
+//  NB: ddr_mux dell'originale RIMOSSO — nel core il mux DDR è fatto a mano (ss_ddr_gate.sv)
 //  nel top (gated su ss_busy). Qui serve solo l'interface ddr_if.
 //============================================================================
 

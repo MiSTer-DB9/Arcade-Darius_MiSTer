@@ -9,6 +9,12 @@ MSM5205** audio, driving the game's signature **triple-screen** ultra-wide
 display. This core reimplements the hardware in SystemVerilog from MAME
 references and hardware observation on original PCBs.
 
+**All four processors and the SDRAM controller are my own designs**, each
+written from scratch and published in its own repository:
+[rm68000](https://github.com/rmonic79/rm68000) for the two 68000s,
+[rmZ80](https://github.com/rmonic79/rmZ80) for the two Z80s and
+[rmSdram](https://github.com/rmonic79/rmSdram_MiSTer) for the SDRAM.
+
 ## About the game
 
 **Darius** is Taito's landmark horizontal shoot-'em-up, famous for its
@@ -21,170 +27,281 @@ one continuous 864-pixel-wide playfield.
 
 ## Status
 
-**Current version: 1.8** (July 2026)
+**Current version: 1.9** (November 2026).
 
 The core runs the full game end-to-end on all supported ROM sets and has been
-tested on real MiSTer hardware. Since v1.1 the audio path, the sprite engine
-and the video/CRT tooling have been substantially reworked, and an
-**experimental savestate** system (16 slots) has been added.
+tested on real MiSTer hardware.
 
-## What's new in v1.8
+## What's new in 1.9
 
-- **Sprite engine fixes** — the sprite object RAM is now **double-buffered and
-  latched at vblank** (buffered sprite RAM, like the original hardware). This
-  removes a rare but real defect where a mid-frame CPU update of the sprite
-  list produced **inconsistent scanlines** (part of the screen using the old
-  sprite data, part the new). Line preparation was also reworked with a
-  shadow-scan FIFO and a small sprite-ROM cache to reduce SDRAM contention.
-- **Audio mixer rework** — a new **per-channel mixer** (9 channels: FM ×2,
-  PSG/SSG ×6, MSM5205 ADPCM) with **per-channel volume and pan** exposed in the
-  OSD, a linear/transparent gain chain and a final soft-clip stage sized on the
-  real worst case (no more square-wave saturation when many voices sum). The
-  ADPCM ROM was moved into BRAM for deterministic latency, and various sound
-  path fixes improve accuracy.
-- **Experimental savestate — 16 slots** — full video / CPU state plus a
-  deterministic audio restore. Select the slot from the OSD. Still
-  **experimental**: see Known issues.
-- **CRT Adjust module** — a core-side analog CRT alignment tool (validated and
-  released, see the dedicated section below), bringing **H-Size**,
-  **H-Position** and **V-Shift** together in one line-buffer module that
-  **never desyncs the CRT**. Alongside it, an **experimental** set of
-  single-screen views for the triple screen — **Screen Jump**, **triple-screen
-  wide** and a **follow-cam** mode that tracks the Silver Hawk — opt-in from the
-  OSD.
-- DSP / BRAM optimizations across the audio mixer and video path.
+### Own processors and SDRAM controller
 
-## Known issues (v1.8)
+Version 1.9 replaces every processor of the board, and the SDRAM controller,
+with designs of my own. **No third-party processor or SDRAM code is left in
+the core.**
 
-- **Savestate is experimental.** It works across the 16 slots but is not
-  guaranteed solid in every situation; loading a state saved by an older build
-  is not supported. Kept under observation.
-- **Experimental single-screen views** — the triple-screen views (Screen Jump,
-  wide zoom, follow-cam) are opt-in and still being refined. (CRT Adjust itself
-  — H-Size / H-Position / V-Shift — is validated and released, not
-  experimental.)
-- **15 kHz CRT output** — the native 864-pixel triple-panel resolution is
-  hard on the MiSTer analog I/O board, but the new **experimental CRT views**
-  (wide zoom, Triple CRT Wide, follow-cam) make 15 kHz **usable** — a lot more
-  than before. The single-screen follow-cam / wide modes in particular give a
-  proper CRT-friendly picture. This is via experimental features and not yet
-  guaranteed in every mode.
+**rm68000 — the two 68000s (main and sub CPU).**
+[rm68000](https://github.com/rmonic79/rm68000) is a from-scratch
+implementation of the Motorola MC68000, written from the manufacturer's
+documentation and from the published analysis of the die — the micro ROM,
+the nano ROM, the ALU matrices and the register-file tables printed in the
+original Motorola patent. It reproduces the 68000 **tick for tick**: the same
+bus accesses, in the same order, on the same cycles, with the same pacing. It
+works the way the silicon does, with two non-overlapping clock phases and
+two-level microcode, and its tables are generated from the die data, not
+typed by hand.
+- Every block has an exhaustive bench against a model independent of the RTL
+  (all 1024 microcode addresses, all 65,536 instruction words for the
+  decoders, every cell of the ALU matrix on every byte pair), plus the
+  whole-CPU benches: every addressing mode, every exception path, interrupts,
+  STOP, bus arbitration.
+- In Darius it runs both CPUs with its **DTACK generator inside the CPU node**:
+  the bus cycle is stretched while the SDRAM is busy, and the cycles lost to a
+  stall are recovered, so the CPUs keep the pace of the original board.
+- The **savestate of the two 68000s** is rm68000's external savestate: it
+  pauses both CPUs and reads out and restores their entire architectural
+  state, without a debug port inside the processor.
 
-## Milestones reached
+**rmZ80 — the two Z80s (music CPU and ADPCM/sound-effects CPU).**
+[rmZ80](https://github.com/rmonic79/rmZ80) is a from-scratch implementation
+of the Zilog Z80, written from the manufacturer's documentation and from
+published measurements of the chip. It reproduces the Z80 **T-state for
+T-state**: every instruction, prefix and interrupt response takes the same
+number of T-states as the chip, with the same M-cycles in the same order, and
+the bus is driven at **half-T-state resolution**. The undocumented behaviour is
+included: the flags in bits 5 and 3, `WZ` (MEMPTR), `SLL`, the halves of IX and
+IY, the unassigned `ED` and `DD`/`FD` positions.
+- It is small: the control is decoded directly instead of microcoded, the
+  registers are flip-flops, and it uses no block memory.
+- Its complete state can be read at any time and loaded in one clock, which
+  is what the savestate of the audio CPUs uses.
+- In Darius both Z80s are paced by two clock enables per T-state. In pause the
+  clock-enable counter stops, so on resume the CPUs stay locked to the same
+  half T-state of the YM2203s; after a restore it is put back on the half
+  T-state the restored CPU was in. The audio bench runs the CPUs through 57
+  pauses, 57 state reloads and 57 resumes and gets the same YM writes and
+  PC060HA accesses, on the same T-states, as a run without pauses.
 
-- Boots and plays the full game with accurate video and controls on all sets
-- **Dual 68000** main/sub with shared RAM (FX68K core), PC060HA master/slave
-  communication reproduced from MAME
-- Three horizontal panels composed into the continuous 864-pixel screen
-- **Sprite renderer** with priority, flip, 16×16 4bpp tiles, **buffered
-  (vblank-latched) sprite RAM**, shadow-scan FIFO and sprite-ROM cache
-- FG text / HUD layer with local BRAM text ROM
-- Palette with MAME-verified byte order
-- **Full audio chain**: YM2203 ×2 (FM + SSG/PSG) + MSM5205 ADPCM, per-channel
-  mixer with volume/pan
-- **Experimental 16-slot savestate** (video + CPU + deterministic audio)
-- **CRT Adjust** (validated / released) — core-side analog geometry (H-Size,
-  H-Position, V-Shift) that never desyncs the CRT
-- **Experimental single-screen views for a triple-screen game** — wide zoom
-  modes (288/320/432), Screen Jump, Triple CRT Wide, and a **follow-cam** that
-  tracks the Silver Hawk: play the ultra-wide triple game on one monitor / CRT
+**rmSdram — the SDRAM controller.**
+[rmSdram](https://github.com/rmonic79/rmSdram_MiSTer) is a single-clock SDRAM
+controller: it keeps one row open per bank, overlaps the banks (while one
+operation holds the data bus, the next bank is activated or precharged on the
+free command cycles) and buffers writes, so loading the ROMs does not block the
+readers. Every chip timing is a parameter in picoseconds.
+- **Each graphics client has its own port**: the three panels and the sprites
+  read in parallel, and each 32-bit read is one job of two words instead of two
+  16-bit accesses in a row.
+- It drives **one chip with 9-bit columns**, so the core now runs on **every
+  MiSTer SDRAM module: 32, 64 and 128 MB**.
+- The SDRAM clock comes from a dedicated PLL output, at 180°, and the point
+  where read data is captured is set from the pin delays measured on the build.
 
-## Roadmap / still to implement
+### System
 
-- Make the **savestate** solid enough to drop the "experimental" tag
-- Finish and stabilize the **single-screen / follow-cam views**
-- Optional **high-score saving** (NVRAM) — under evaluation, deliberately
-  non-invasive (no CPU pause), not in this release
+- **48 MHz system clock** (was 96 MHz). The dividers were halved, so the CPUs,
+  the audio chips and the pixel clock keep their frequencies. The panel
+  renderers at 48 MHz give the same pixels as at 96 MHz (774,144 pixels
+  compared, 0 differences).
+- **sys/ framework** updated to the current MiSTer framework (audio volume
+  boost from the menu, new Main commands).
 
-**Features**
-- Dual 68000 main/sub @ 8 MHz with shared RAM (FX68K core)
-- Two Z80 sound CPUs (music + ADPCM/FX)
+### Video
+
+- **CRT Shrink** — new: the picture compressed vertically to 1/2, 1/3 or 1/4,
+  for CRTs, without a frame buffer and without moving the sync. See
+  [CRT Shrink](#crt-shrink) for how it works.
+- **CRT Shrink Interlace** — new: an interlaced mode that shows, over two
+  fields, twice the lines of the plain shrink (with 1/2, all 224 lines of the
+  picture).
+- **Sprites locked to the shrink grid** (1/2 and 1/4): a sprite moving by one
+  line no longer bobs up and down between frames.
+- **CRT Adjust, H-Position**: the picture moves left **without disappearing
+  into the blanking**, and the range grows from ±48 to −64…+63 steps of 4
+  pixels.
+- **CRT Adjust, H-Size**: the picture now stretches and squeezes around its
+  **centre**, which stays in place; before, it grew to the right and shrank to
+  the left.
+- **CRT Adjust with the interlaced shrink**: the vertical sync keeps its
+  position within the line, so the two fields stay interlaced.
+- **Follow views**: the last line of the picture (line 223) is now visible on a
+  CRT, and with the shrink the first line of the window no longer shows the
+  bottom of the previous frame.
+- **VRAM arbiter fix**: after a turn to the centre panel, the centre panel was
+  no longer served until a side panel asked — the line glitch on the
+  wireframe ships of the attract sequence is gone.
+- **Panel renderer in three stages** (VRAM, graphics ROM, drawing): the waits
+  overlap instead of adding up, with no broken lines up to an average ROM wait
+  of 875 ns.
+- **Sprite RAM**: when the main and sub CPUs write in the same clock, the sub
+  CPU's write is no longer lost.
+
+### Audio
+
+- **Audio matched to MAME.** The core's final output was compared with MAME's,
+  sound by sound (waveform and spectrum), on the game's 47 sounds, and every
+  correction comes from that comparison:
+  - the PSG DC-removal filter works on 9 bits: at 8 bits the output folded over
+    and the square wave was asymmetric (even harmonics at −24 dB);
+  - the PSG volume table, measured from a volume sweep;
+  - the mixer gains between FM, PSG and ADPCM: the PSG was 11.5 dB and the ADPCM
+    5.9 dB louder than in MAME relative to the FM, and the mix lost 4–5 dB of
+    bass;
+  - the PSG tone volume and envelope levels, as measured on MAME's output.
+  
+  Result: FM, PSG and ADPCM at the same distance from MAME, and the mix
+  equalization within about 1 dB from 50 Hz to 16 kHz.
+
+### Other
+
+- Savestates made with earlier versions cannot be loaded (the 68000 savestate
+  format changed with rm68000).
+
+## Features
+
+- Dual 68000 main/sub @ 8 MHz with shared RAM (**rm68000**)
+- Two Z80 sound CPUs (music + ADPCM/FX) @ 4 MHz (**rmZ80**)
+- SDRAM controller with one port per graphics client (**rmSdram**), on any
+  MiSTer SDRAM module
 - Three horizontal panels composed into the 864-pixel virtual screen
 - Sprite renderer with priority, flip, 16×16 4bpp tiles, **buffered sprite RAM**
+  and a sprite-ROM cache
 - FG text/HUD layer with local BRAM text ROM
 - Palette with MAME-verified byte order
-- Audio: YM2203 ×2 (FM + PSG) + MSM5205 ADPCM with **per-channel volume/pan**
-  mixer
+- Audio: YM2203 ×2 (FM + PSG) + MSM5205 ADPCM, with a **per-channel gain** for
+  each of the nine channels in the OSD
 - PC060HA main/sub communication
-- SDRAM arbitration for tile/sprite ROM and main/sub CPU fetch
-- **Experimental savestate (16 slots)** from the OSD
-- **CRT Adjust** (H-Size / H-Position / V-Shift) — validated and released
-- **Experimental single-screen views** (Screen Jump, triple wide, follow-cam)
+- Experimental savestate (16 slots) from the OSD
+- Experimental **screen views** for one monitor: Follow, Follow 4:3+, Follow
+  Wide, Screen Jump, and Triple CRT Wide
+- **CRT Adjust** (H-Size, H-Position, V-Shift) and **CRT Shrink** (1/2, 1/3,
+  1/4, with an interlaced mode)
 - Inputs (coin, start, 8-way joystick) and full DIP switch support
 - MiSTer OSD with video, audio-mix, pause and DIP options
-- Pause overlay with project logo, scrolling supporters list and social links
-- "Clean Pause" OSD option (pause without dim/logo overlay)
+- Pause synchronized to the frame, with the picture dimmed while paused
+- "Clean Pause" OSD option (pause without the dim)
 
 **ROM sets supported**
-- Darius (World) — reference set
-- Darius (US)
-- Darius (Japan rev 1 — dariusj)
-- Darius (Japan pure — dariuso)
-- Darius Extra Version (dariuse)
+- Darius (World) (`darius`) — reference set
+- Darius (US) (`dariusu`)
+- Darius (Japan) (`dariuso`)
+- Darius (Japan, rev 1) (`dariusj`)
+- Darius Extra Version (Japan) (`dariuse`)
+
+## CRT Shrink
+
+Darius was built for three monitors side by side: its picture is 864 pixels
+wide and 224 lines tall. On one CRT the whole width fits in a line (Triple CRT
+Wide), but then the picture is three times too tall for its width. **CRT
+Shrink** compresses it vertically, so the triple screen keeps proportions
+close to the original cabinet — **1/3** gives the proportions of the three
+monitors — while the CRT keeps receiving its native 15 kHz signal.
+
+| CRT Shrink | Window | Source lines per display line |
+|------------|--------|-------------------------------|
+| Off        | 224 lines | 1 |
+| 1/2        | 112 lines | 2 (every other line) |
+| 1/3        | 75 lines  | about 3 |
+| 1/4        | 56 lines  | 4 (one line in four) |
+
+**It is not a scaler, and it has no frame buffer.** No line is stored and no
+line is moved in time. The window is centred in the frame, and for each
+display line inside it the core asks the renderers — the tile panels, the
+sprites and the text layer — to draw one source line, advancing by 224/N
+source lines per display line (an 8.8 fixed-point accumulator, the only state
+the module keeps). The renderers prepare that line during the line before, as
+they always do, so the picture comes out of the renderers already compressed.
+Outside the window the renderers stay idle and the lines are black. The
+horizontal and vertical sync are untouched: the CRT sees the same signal as
+without the shrink, so it never loses lock. 1/2 and 1/4 are exact integer
+ratios, so the lines are dropped uniformly.
+
+The game itself does not notice: its line interrupt, the savestate and the
+follow views keep using the natural line count of the frame, and the sprite
+list is copied at the natural line 224, as without the shrink.
+
+**Interlaced mode** (CRT Shrink Interlace, for CRTs). The plain shrink drops
+lines: with 1/2, one source line in two is never shown. The interlaced mode
+alternates two fields:
+- the even field has 263 lines, with the vertical sync starting in the middle
+  of a line; the odd field has 262 lines, with the vertical sync at the start
+  of a line: 262.5 lines between two syncs, so the CRT draws the odd field half
+  a line below the even one;
+- the odd field shows the source lines half a step further on (with 1/2: lines
+  1, 3, 5… while the even field shows 0, 2, 4…).
+
+Over two fields the CRT shows twice the lines of the plain shrink — with 1/2,
+all 224 lines of the picture. The field is signalled to the framework on
+`VGA_F1`.
+
+**Sprites on the shrink grid.** The window takes its source lines on a fixed
+grid (with 1/2: 0, 2, 4…). A sprite that moves down by one source line would
+show its even rows in one frame and its odd rows, half a line lower, in the
+next: it would bob up and down, especially on diagonals. With 1/2 and 1/4 the
+vertical position of every sprite is rounded to the grid, so each sprite always
+shows the same rows of itself: without interlace it moves by whole display
+lines; with interlace the even field always shows its even rows and the odd
+field its odd rows, half a line lower. 1/3 has no rounding: its grid has a step
+of 3, while the objects are made of 16-line pieces, which would round to
+different lines and split the object.
+
+The shrink works together with CRT Adjust (with the interlaced shrink, the
+vertical sync keeps its position within the line through the line buffer) and
+with the follow views.
 
 ## CRT Adjust
 
-**CRT Adjust** is a core-side analog CRT geometry / alignment tool exposed in
-the OSD — **validated and released** (not experimental). It is the evolution of
-the earlier "Analog H-Size" module: a single always-on line buffer that
-provides **three live controls** for lining the image up perfectly on a real
-CRT.
+**CRT Adjust** is an analog CRT geometry / alignment tool in the OSD: a single
+line buffer that provides **three live controls** for lining the image up on a
+real CRT.
 
 | Control        | What it does                                                       |
 |----------------|--------------------------------------------------------------------|
-| **H-Size**     | Horizontal stretch / squeeze — bidirectional, **integer** (every source pixel is emitted for a whole number of pixel clocks) |
-| **H-Position** | Horizontal image shift — moves the picture **content**, not the sync |
-| **V-Shift**    | Vertical line shift                                                 |
+| **H-Size**     | Horizontal stretch / squeeze, −16 to +15 — **integer** (every source pixel is emitted for a whole number of pixel clocks), around the centre of the picture, which stays in place |
+| **H-Position** | Horizontal image shift, −64 to +63 steps of 4 pixels — moves the picture **content**, not the sync |
+| **V-Shift**    | Vertical line shift, −16 to +15                                     |
 
 **Why it never desyncs the CRT.** The picture **content** is shifted and
 resized through the line buffer while the horizontal/vertical **sync signals
 stay native**. The CRT keeps its lock at all times, so you can slide and resize
-the image **live** without the screen rolling or losing hold — unlike moving
-the blanking / sync windows.
+the image **live** without the screen rolling or losing hold.
 
 Because the resize is **integer** (no fractional ratio, no per-pixel
 nearest-neighbor) and the output is the byte-exact source pixel, there is **no
-shimmering** on moving content and **no blending / blur** — the image stays
-sharp while you stretch it.
+shimmering** on moving content and **no blending / blur**.
 
-The module is inserted **core-side** at the video-output boundary, with **zero
-`sys/` framework changes** (MiSTer-devel compliant — the framework is never
-modified). The trade-off is that the adjustment reaches the analog DAC **and
-HDMI follows it too**: leave CRT Adjust **Off** (default) for an untouched HDMI
-image, and turn it on when aligning on an analog CRT. Cost is about **1 M10K,
-~50 ALM, 0 DSP**.
+The module sits in the core, at the video-output boundary. The adjustment
+reaches the analog output **and HDMI follows it too**: leave CRT Adjust **Off**
+(default) for an untouched HDMI image, and turn it on when aligning on an
+analog CRT.
 
-## Triple-screen views, wide zoom & follow-cam (experimental)
+## Screen views (experimental)
 
-Darius is a **three-monitor** game: its native picture is an 864-pixel-wide
-triple panel. On a single modern display that means a very wide, short image.
-This core adds a **unique set of display modes** — as far as we know **nothing
-else on MiSTer does this** — that reshape the triple screen for a single
-monitor **without touching the game logic** and while keeping the native
-15.7 kHz line rate (so it stays CRT-friendly and never desyncs).
+On a single display the native 864-pixel triple panel is a very wide, short
+image. The core adds display modes that reshape it for one monitor **without
+touching the game logic** and while keeping the native 15.7 kHz line rate.
 
 The picture is captured **after** the compositor, buffered per line
 (lossless), and re-emitted into a **wider active window** with **integer pixel
 repeat** — so the image genuinely grows on a CRT with no blur and no shimmer.
 
-| Mode              | What you get                                                    |
+| Screen View       | What you get                                                    |
 |-------------------|-----------------------------------------------------------------|
-| **Triple**        | Native triple panel (864 px) — bypass, unchanged                |
-| **Wide 288 ×4**   | Single-panel window, panel proportions, zoomed                  |
-| **Wide 320 ×4**   | "4:3-pushed" window (1280 active slots)                          |
-| **Wide 432 ×3**   | ~1.5-screen window (1296 active slots)                           |
-| **Screen Jump**   | Single-panel view that **jumps** panel-to-panel with the action |
-| **Triple CRT Wide** | Native triple re-emitted at a wider integer rate (864 active over ~1018 slots) so the whole triple screen fills a CRT line — integer 1:1 repeat, no scaling |
+| **Triple**        | Native triple panel (864 px) — unchanged                        |
+| **Follow**        | 288-pixel window (one panel) that follows the Silver Hawk       |
+| **Follow 4:3+**   | 320-pixel window that follows the Silver Hawk                   |
+| **Follow Wide**   | 432-pixel window (about one and a half panels) that follows the Silver Hawk |
+| **Screen Jump**   | 288-pixel window that **jumps** panel to panel with the action  |
 
-- **Follow-cam** — instead of showing all three panels, the view becomes a
-  **single zoomed screen that follows the Silver Hawk**: the camera tracks the
-  ship (deadzone + smooth slew, updated at end of vblank) and eases back to the
-  playfield center when the ship is absent (title / death). It turns the
-  ultra-wide triple game into a normal-proportioned single-screen experience
-  you can actually play comfortably on one monitor / CRT.
+The follow views track the ship (deadzone + smooth slew, updated at the end of
+vblank) and ease back to the playfield centre when the ship is absent (title,
+death).
 
-All of the above are **experimental**, opt-in from the OSD, and leave the
-default **Triple** view untouched.
+**Triple CRT Wide** re-emits the native triple screen at a wider integer rate
+(864 active pixels over about 1018 slots), so the whole triple screen fills a
+CRT line — integer 1:1 repeat, no scaling.
+
+All of the above are opt-in from the OSD and leave the default **Triple** view
+untouched.
 
 ## Screenshots
 
@@ -201,9 +318,9 @@ default **Triple** view untouched.
 
 | Component        | Spec                                                     |
 |------------------|----------------------------------------------------------|
-| Main CPU         | Motorola 68000 @ 8 MHz (FX68K)                           |
-| Sub CPU          | Motorola 68000 @ 8 MHz (FX68K)                           |
-| Sound CPU        | Z80 ×2 (music + ADPCM/FX)                                |
+| Main CPU         | Motorola 68000 @ 8 MHz (rm68000)                         |
+| Sub CPU          | Motorola 68000 @ 8 MHz (rm68000)                         |
+| Sound CPU        | Z80 ×2 @ 4 MHz — music + ADPCM/FX (rmZ80)                |
 | Sound chip 1     | Yamaha YM2203 OPN ×2 — FM + SSG/PSG (jt12)               |
 | Sound chip 2     | OKI MSM5205 ADPCM (jt5205)                               |
 | Tilemaps         | Taito PC080SN ×2 (two scrolling tile layers)             |
@@ -215,56 +332,41 @@ default **Triple** view untouched.
 
 - Terasic DE10-Nano
 - MiSTer I/O board (recommended)
-- SDRAM module (128 MB, 64 MB or 32 MB)
-- HDMI display (recommended), or HDMI→VGA adapter for 31 kHz VGA monitors
+- SDRAM module (32 MB, 64 MB or 128 MB)
+- DDR3 memory (built into DE10-Nano)
+- Works on HDMI displays and on CRTs via the analog video output
 
-**Note on video output**: The core works on standard HDMI displays. For
-31 kHz VGA monitors, use an HDMI→VGA adapter — do **not** enable Direct Video.
-**15 kHz CRT output is not currently supported** because the 864×224
-triple-panel resolution is incompatible with the MiSTer analog I/O board.
+## Building from source
 
-## Build from source
+Requires Quartus Prime 17.0 (free Lite Edition).
 
-Requires **Quartus Prime Lite 17.0.x** for Cyclone V (5CSEBA6U23I7).
-
-```bash
-cd Arcade-Darius_MiSTer
-quartus_sh --flow compile Darius -c Darius
+```
+Open Darius.qpf in Quartus → Processing → Start Compilation
 ```
 
-Output: `output_files/Darius.rbf` (~3.9 MB).
+Output bitstream is generated in `output_files/Darius.rbf`.
 
 ## Running on MiSTer
 
-The [releases/](releases/) folder contains the pre-built bitstream and the
-parent MRA for the reference ROM set:
+The [releases/](releases/) folder contains the parent MRA and a
+prebuilt RBF; the other ROM sets are in
+[releases/_alternatives/_Darius/](releases/_alternatives/_Darius/):
 
-- `Darius_YYYYMMDD.rbf` — pre-built core bitstream
-- `Darius (World).mra` — parent MRA (reference set)
-
-Alternative ROM sets are provided in [releases/alternatives/](releases/alternatives/):
-
-- `Darius (US).mra`
-- `Darius (Japan).mra`
-- `Darius (Japan, rev 1).mra`
-- `Darius Extra Version (Japan).mra`
-
-Following the MiSTer-devel convention, the alternative sets are also mirrored
-to the official [MRA-Alternatives_MiSTer](https://github.com/MiSTer-devel/MRA-Alternatives_MiSTer)
-repository, where they are picked up automatically by **Update_All**.
+- `Darius (World).mra` — parent MRA
+- `Darius_YYYYMMDD.rbf` — prebuilt bitstream
+- `_alternatives/_Darius/Darius (US).mra` / `Darius (Japan).mra` /
+  `Darius (Japan, rev 1).mra` / `Darius Extra Version (Japan).mra`
 
 Steps:
 
-1. Copy the `.rbf` to `_Arcade/cores/` on the MiSTer SD card.
-2. Copy the desired `.mra` file(s) to `_Arcade/` on the MiSTer SD card.
-3. Provide your legally-owned Darius ROM files where each MRA expects them
-   (usually in `games/mame/`).
-4. For HDMI displays, no special setup is required. For 31 kHz VGA monitors,
-   use an HDMI→VGA adapter (do **not** enable Direct Video). 15 kHz CRT output
-   is not currently supported (see Hardware requirements).
-5. The core OSD defaults to **Narrower HV-Integer** scale, which gives a proper
-   integer-scaled image on modern HDMI displays. Other Scale options
-   (V-Integer, HV-Integer) are available for custom setups.
+1. Copy the `.rbf` to `_Arcade/cores/` on the MiSTer SD card, renamed to
+   `Darius.rbf` — that is the name the MRA looks for.
+2. Copy the `.mra` file(s) to `_Arcade/` on the MiSTer SD card.
+3. Provide your legally-owned `darius.zip` (or the zip of another set) where
+   the MRA expects it (usually in `games/mame/`).
+4. The core OSD defaults to **Narrower HV-Integer** scale, which gives an
+   integer-scaled image on HDMI displays. V-Integer and HV-Integer are also
+   available.
 
 **ROMs are NOT included in this repository.** You must provide them yourself.
 
@@ -273,49 +375,36 @@ Steps:
 ```
 Arcade-Darius_MiSTer/
 ├── rtl/
-│   ├── darius/       Darius-specific core RTL (Umberto Parisi)
-│   ├── fx68k/        M68000 core (Jorge Cwik)
-│   ├── jt12/         YM2203 FM synth (Jose Tejada)
-│   ├── jt5205/       MSM5205 ADPCM (Jose Tejada)
-│   ├── jtframe/      JTFRAME framework modules (Jose Tejada)
-│   ├── t80/          Z80 core
-│   ├── pll/          Clock PLL
-│   └── sdram.sv      SDRAM controller (Sorgelig)
-├── sys/              MiSTer framework (Sorgelig / MiSTer-devel)
-├── releases/         Pre-built .rbf + parent MRA
-│   └── alternatives/ MRA files for alternate ROM sets
-├── docs/             Screenshots
-├── Darius.qpf        Quartus project
-├── Darius.qsf        Quartus assignments
-├── Template.sv       Top-level wrapper
-├── Template.sdc      Timing constraints
-├── files.qip         HDL file list
-├── build_id.v        Build version stamp
-├── LICENSE           GNU GPL v3
-├── AUTHORS.md        Credits and third-party licenses
-└── README.md         This file
+│   ├── darius/      Darius-specific core RTL
+│   ├── rm68000/     rm68000 MC68000 core
+│   ├── rmZ80/       rmZ80 Z80 core
+│   ├── rmSdram/     rmSdram SDRAM controller
+│   ├── jt12/        YM2203 FM synth, with the JT49 PSG
+│   ├── jt5205/      MSM5205 ADPCM
+│   └── pll/         Clock PLL
+├── sys/             MiSTer framework (Sorgelig / MiSTer-devel)
+├── docs/            In-game screenshots
+├── releases/        Parent MRA + other ROM sets + prebuilt RBF
+├── Darius.qpf       Quartus project
+├── Darius.qsf       Quartus assignments
+├── Template.sv      Top-level wrapper
+├── Template.sdc     Timing constraints
+├── files.qip        HDL file list
+└── README.md        This file
 ```
-
-## License
-
-Distributed under **GNU General Public License v3 or later**. See
-[LICENSE](LICENSE) and [AUTHORS.md](AUTHORS.md) for credits and third-party
-licensing.
-
-GPL-3 is chosen to stay compatible with upstream GPL-3 dependencies (JTFRAME,
-FX68K, Sorgelig's sdram and sys framework).
 
 ## Acknowledgements
 
-- **Jorge Cwik** — [FX68K](https://github.com/ijor/fx68k) (M68000 core)
-- **Jose Tejada** ([@jotego](https://github.com/jotego)) — JTFRAME, JT12
-  (YM2203), JT5205 (MSM5205)
-- **Sorgelig** and the **MiSTer-devel team** — framework, SDRAM controller and
-  Template
-- **Andrea Bogazzi** ([@asturur](https://github.com/asturur)) — help with the
-  core-side CRT Adjust / Analog H-Size implementation
-- The **MAMEDev team** — invaluable reference on the Taito PC080SN / PC090OJ /
-  PC060HA hardware, memory maps and timing
+- **Jose Tejada** ([@jotego](https://github.com/jotego)) for JT12 (YM2203),
+  JT49 (PSG), JT5205 (MSM5205) and the JTFRAME DC-removal filter.
+- **Martin Donlon** ([wickerwaka](https://github.com/wickerwaka)) for the
+  savestate infrastructure, ported from the Arcade-TaitoF2 core.
+- The **MAMEDev team** for the invaluable reference on the Taito PC080SN /
+  PC090OJ / PC060HA hardware, memory maps and timing.
+- **Sorgelig** and the **MiSTer-devel team** for the framework, the DDR3
+  adapter and Template.
+- **Andrea Bogazzi** ([@asturur](https://github.com/asturur)) for help with the
+  CRT Adjust implementation.
 
 Full list in [AUTHORS.md](AUTHORS.md).
 
@@ -331,7 +420,27 @@ If you enjoy this core and want to support its development:
 
 - [GitHub](https://github.com/rmonic79)
 - [Twitch](https://twitch.tv/ibecerivideoludici) — live streams
-- [YouTube](https://www.youtube.com/c/IBeceriVideoludici/playlists) — playlists and videos
+- [YouTube](https://www.youtube.com/c/IBeceriVideoludici) — playlists and videos
 - [X / Twitter](https://x.com/rmonic79)
+
+## Pause overlay: the `rm` line
+
+One feature is deliberately not in this core: the pause overlay, with the logo, the
+supporters list and the scrolling credits shown while the game is paused. It lives
+in a parallel line of builds called **`rm`**, published separately:
+
+- [rm-Darius_MiSTer](https://github.com/rmonic79/rm-Darius_MiSTer)
+
+Its RBF is named `rmDarius`, different from the one here, so both can sit on the
+same SD card without replacing each other. Everything else — the emulation
+itself — is the same in both.
+
+## License
+
+The core as a whole is distributed under **GNU GPL v3 or later** (see `LICENSE`);
+third-party files keep their original copyright and license, listed in
+[AUTHORS.md](AUTHORS.md). It is provided as-is for educational and preservation
+purposes. Original ROM data is not included; users must provide their own legally
+obtained copies.
 
 Original *Darius* arcade hardware © Taito Corporation, 1986.

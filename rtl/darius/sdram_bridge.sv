@@ -20,7 +20,7 @@
 */
 
 // sdram_bridge — Bridge e arbitro SDRAM per Darius.
-// Multiplexa 3 client sul controller Genesis 4-port di Sorgelig:
+// Multiplexa 3 client sul controller SDRAM a 4 porte (sdrc_darius, rmSdram):
 //   Port 0: Tile/Sprite/Text ROM reads + ROM download writes
 //   Port 1: Main CPU ROM
 //   Port 2: Sub CPU ROM
@@ -28,11 +28,11 @@
 //
 // Clients use ACTIVE-LOW level protocol:
 //   - CPU raises req_n LOW (active) when it needs data
-//   - Bridge translates to Genesis toggle protocol (req XOR → new request)
+//   - Bridge translates to the controller's toggle protocol (req XOR → new request)
 //   - Bridge holds dtack_n HIGH until SDRAM responds
 //   - Bridge pulses dtack_n LOW for one cycle when data arrives
 //
-// The Genesis controller (sdram.sv by Sorgelig) uses toggle protocol:
+// The controller (sdrc_darius) uses toggle protocol:
 //   - Toggle req to start a request
 //   - ack matches req when data is ready
 //   - dout is shared across all 3 ports (active port has valid data)
@@ -79,7 +79,7 @@ module sdram_bridge (
 	output [15:0] sub_data,
 	output reg    sub_ready,
 
-	// ==================== Genesis SDRAM controller ports ====================
+	// ======================== SDRAM controller ports ========================
 	// Port 0 (tile/download)
 	output reg [24:1] sdram_addr0,
 	output reg [15:0] sdram_din0,
@@ -173,7 +173,7 @@ always @(posedge clk) begin
 	end else begin
 		if (~ioctl_download) dl_wait_r <= 0;
 
-		// WIDE=1: Genesis-style — latch word, then write to banks 0, 1, 2
+		// WIDE=1: latch word, then write to banks 0, 1, 2
 		if (ioctl_download && ioctl_wr && ioctl_index == 16'd0) begin
 			dl_hi_byte   <= ioctl_dout[15:8];
 			dl_lo_byte   <= ioctl_dout[7:0];

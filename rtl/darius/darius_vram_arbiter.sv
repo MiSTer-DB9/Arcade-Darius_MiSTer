@@ -94,10 +94,15 @@ always @(posedge clk) begin
 		begin : grant_block
 			integer i;
 			reg [1:0] check;
+			reg [2:0] sum3;
 			reg granted;
 			granted = 0;
 			for (i = 0; i < 3 && !granted; i = i + 1) begin
-				check = (next_prio + i[1:0] >= 2'd3) ? next_prio + i[1:0] - 2'd3 : next_prio + i[1:0];
+				// 03/11: somma a 3 bit. A 2 bit next_prio = 2 piu' i = 2 dava 0 invece di 1: con l'ultimo turno al pannello 1
+				// il pannello 1 non veniva mai controllato finche' non chiedeva un altro pannello (scena wireframe dell'attract:
+				// i pannelli laterali quasi vuoti finiscono presto, il centrale restava fermo e la riga non finiva).
+				sum3  = {1'b0, next_prio} + i[2:0];
+				check = (sum3 >= 3'd3) ? 2'(sum3 - 3'd3) : sum3[1:0];
 				if (pending[check]) begin
 					case (check)
 						2'd0: vram_addr <= p0_addr;

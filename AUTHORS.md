@@ -5,25 +5,43 @@
 **Author**: Umberto Parisi ([rmonic79](https://github.com/rmonic79))
 
 The original RTL source files for the Darius-specific logic (under
-`rtl/darius/` and the project wrapper `Template.sv`) are copyright
-Umberto Parisi and distributed under GNU GPL v3 or later.
+`rtl/darius/`, except the third-party files listed below) are copyright
+Umberto Parisi and distributed under GNU GPL v3 or later. The project wrapper
+`Template.sv` is by Umberto Parisi, derived from the MiSTer core template by
+Sorgelig (MiSTer-devel).
+
+## Own components
+
+The two processors and the SDRAM controller are separate projects by the same
+author. Each one has its own repository, with its documentation and test
+benches.
+
+| Component | Folder | Repository |
+|-----------|--------|------------|
+| **rm68000** — MC68000 core, DTACK generator, external savestate | `rtl/rm68000/` | [rmonic79/rm68000](https://github.com/rmonic79/rm68000) |
+| **rmZ80** — Z80 core | `rtl/rmZ80/` | [rmonic79/rmZ80](https://github.com/rmonic79/rmZ80) |
+| **rmSdram** — SDRAM controller | `rtl/rmSdram/` | [rmonic79/rmSdram_MiSTer](https://github.com/rmonic79/rmSdram_MiSTer) |
 
 ## Third-party components
 
 This core builds on top of excellent open-source projects. All third-party
 sources retain their original copyright and license. The core as a whole
 is distributed under **GNU GPL v3 or later** to stay compatible with the
-most restrictive upstream (JTFRAME / JTCORES).
+most restrictive upstream (JT12 / JT5205 / JTFRAME).
 
 | Component | Author | Project | License |
 |-----------|--------|---------|---------|
-| **FX68K** — M68000 cycle-accurate core | Jorge Cwik | [ijor/fx68k](https://github.com/ijor/fx68k) | GPL-3 |
-| **JTFRAME / JTCORES** — framework, filters, dtack, tilemap, etc. | Jose Tejada ([@topapate](https://twitter.com/topapate)) | [jotego/jtcores](https://github.com/jotego/jtcores) | GPL-3 |
-| **JT12** — YM2203 FM synthesizer | Jose Tejada | [jotego/jt12](https://github.com/jotego/jt12) | GPL-3 |
+| **JT12** — YM2203 FM synthesizer, with the JT49 PSG | Jose Tejada ([@topapate](https://twitter.com/topapate)) | [jotego/jt12](https://github.com/jotego/jt12) | GPL-3 |
 | **JT5205** — MSM5205 ADPCM decoder | Jose Tejada | [jotego/jt5205](https://github.com/jotego/jt5205) | GPL-3 |
-| **T80** — Z80 core | Daniel Wallner, MikeJ | [MiSTer-devel/T80](https://github.com/MiSTer-devel/T80) | BSD / GPL |
-| **sdram.sv** — Genesis SDRAM controller | Sorgelig ([sorgelig](https://github.com/sorgelig)) | [MiSTer-devel](https://github.com/MiSTer-devel) | GPL-3 |
-| **sys/ framework** — MiSTer HPS/IO, OSD, video scaler, audio | Sorgelig / MiSTer-devel | [MiSTer-devel/Main_MiSTer](https://github.com/MiSTer-devel/Main_MiSTer) | GPL-3 |
+| **JTFRAME** — audio DC-removal filter (`jtframe_dcrm`) | Jose Tejada | [jotego/jtframe](https://github.com/jotego/jtframe) | GPL-3 |
+| **Savestate infrastructure** — ssbus, memory_stream, save state adaptors (`rtl/darius/ss/savestate.sv`, `savestate_ddr.sv`, `savestate_ram.sv`, `savestate_ui.sv`, `memory_stream.sv`; adapted by Umberto Parisi) | Martin Donlon ([wickerwaka](https://github.com/wickerwaka)) | [wickerwaka/Arcade-TaitoF2_MiSTer](https://github.com/wickerwaka/Arcade-TaitoF2_MiSTer) | GPL-3 |
+| **DDR3 adapter** — `rtl/darius/darius_ddram.sv` | Sorgelig | [MiSTer-devel](https://github.com/MiSTer-devel) | GPL-3 |
+| **sys/ framework** — MiSTer HPS/IO, OSD, video scaler, audio | Sorgelig (Alexey Melnikov) / MiSTer-devel, with files by Till Harbaum, Ludvig Strigeus, TEMLIB (`ascal.vhd`), Ultra-Embedded (`spdif.v`), bellwood420, Kitrinx, Grabulosaure, Mike Simone; Intel/Altera generated PLL files | [MiSTer-devel/Main_MiSTer](https://github.com/MiSTer-devel/Main_MiSTer) | per file: GPL-2.0-or-later, GPL-3.0-or-later, LGPL-3.0-or-later (`sd_card.sv`), TEMLIB free-use notice (`ascal.vhd`), Intel license (`pll_cfg/`) |
+
+## Contributors
+
+- **Andrea Bogazzi** ([@asturur](https://github.com/asturur)) — help with the CRT
+  Adjust implementation (`rtl/darius/crt_adjust.sv`).
 
 ## Reference
 

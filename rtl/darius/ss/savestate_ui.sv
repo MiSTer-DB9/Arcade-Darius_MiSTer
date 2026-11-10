@@ -1,12 +1,12 @@
-/*  This file is part of BoogieWings_MiSTer.
+/*  This file is part of Darius_MiSTer.
     GPL-3.
     Original author: Martin Donlon (wickerwaka) — Arcade-TaitoF2 savestate system.
-    Modified/adapted for BoogieWings by: Umberto Parisi (rmonc79)
+    Modified/adapted by: Umberto Parisi (rmonic79)
 */
 
 //============================================================================
 //  savestate_ui — trigger del savestate da tasti/gamepad/OSD
-//  Portato da _reference/taitof2_ss/savestate_ui.sv (Martin Donlon).
+//  Portato da savestate_ui.sv di Arcade-TaitoF2 (Martin Donlon).
 //  Genera ss_save/ss_load + slot da: Alt+F1-F4 (save), F1-F4 (load),
 //  gamepad (SS+Down=save, SS+Up=load, SS+L/R=slot), OSD status bits.
 //============================================================================

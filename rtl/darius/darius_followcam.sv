@@ -62,6 +62,9 @@ module darius_followcam (
 	output wire [7:0] r_out, g_out, b_out,
 	// Timing display (in follow: finestra allargata; in triple: passthrough)
 	output wire       HBlank_out,
+	// VBlank dello stream RIGENERATO: il display esce con una riga di ritardo rispetto al render, quindi il suo VBlank va
+	// ritardato di altrettanto (come darius2_followcam). Senza follow-cam/Wide e' VBlank.
+	output wire       VBlank_out,
 	output wire       HSync_out,
 	// pixel-ce dello stream in uscita (= ce_pix, o 16MHz in triple wide)
 	output wire       pix_ce,
@@ -113,8 +116,8 @@ always @(posedge clk) begin
 	              (view_r == 3'd2) ? 11'd1478 : 11'd1486;
 end
 
-// ce a 16MHz (/6 di clk) per wide3, agganciato in fase a inizio linea render.
-// 6108 clk/linea / 6 = 1018 slot esatti — nessuna deriva.
+// ce a 16MHz (/3 di clk a 48 MHz) per wide3, agganciato in fase a inizio linea render.
+// 3054 clk/linea / 3 = 1018 slot esatti — nessuna deriva.
 reg [2:0] div6;
 reg       ce6;
 wire      slot_ce = w3 ? ce6 : ce_pix;
@@ -247,8 +250,8 @@ always @(posedge clk) begin
 		div6 <= 3'd0;
 		ce6  <= 1'b0;
 	end else begin
-		div6 <= (div6 == 3'd5) ? 3'd0 : div6 + 3'd1;
-		ce6  <= (div6 == 3'd4);   // pulse su slot boundary /6
+		div6 <= (div6 == 3'd2) ? 3'd0 : div6 + 3'd1;   // /3 a 48 MHz (era /6 a 96)
+		ce6  <= (div6 == 3'd1);   // pulse su slot boundary /3
 	end
 end
 
@@ -307,8 +310,26 @@ wire [14:0] pix_rd = rd_par ? lb1_q : lb0_q;
 // Output: espansione 5->8 (replica MSB), linea 0 nera (contiene l'ultima
 // linea del frame precedente), bypass totale se view=Triple
 // =====================================================================
-wire disp_active = ~disp_hb & ~VBlank;
-wire blank0 = (render_y == 9'd0) | ~disp_active;
+// 04/11 (come darius2_followcam): il display esce con una riga di ritardo rispetto al render (legge il buffer della
+// riga precedente), quindi il suo VBlank va ritardato di una riga, con la fase del display. Il campione va preso a
+// FINE attivo display, non sul rise di HBlank del render (nelle viste follow il display e' piu' lungo del render).
+// Cosi' la prima riga dopo il VBlank resta spenta (conterrebbe l'ultima del quadro prima: con il CRT Shrink
+// interlacciato il fondo della finestra precedente in cima) e l'ultima riga attiva si vede sulla riga dopo; il VBlank
+// ritardato esce anche (VBlank_out) verso il framework e il CRT Adjust, che altrimenti spegnevano quella riga
+// (crediti tagliati con Wide + CRT Shrink).
+reg vb_eol = 1'b1, vb_1l = 1'b1;
+always @(posedge clk) begin
+	if (reset) begin
+		vb_eol <= 1'b1;
+		vb_1l  <= 1'b1;
+	end else begin
+		if (disp_hb & ~dhb_d) vb_eol <= VBlank;   // fine attivo display, riga v
+		if (hb_fall)          vb_1l  <= vb_eol;   // inizio riga v+1
+	end
+end
+wire disp_active = ~disp_hb & ~vb_1l;
+wire blank0 = ~disp_active;
+assign VBlank_out = out_en ? vb_1l : VBlank;
 wire [7:0] fr = {pix_rd[14:10], pix_rd[14:12]};
 wire [7:0] fg = {pix_rd[9:5],   pix_rd[9:7]};
 wire [7:0] fb = {pix_rd[4:0],   pix_rd[4:2]};
