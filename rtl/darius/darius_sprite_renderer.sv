@@ -44,10 +44,8 @@ module darius_sprite_renderer #(
 	ssbus_if.slave     ssbus,
 	input  wire  [9:0] render_x,
 	input  wire  [8:0] render_y,
-	input  wire  [8:0] render_y_next,   // riga sorgente della riga di display dopo (CRT Shrink); spento = render_y+1
-	input  wire  [8:0] render_y_first,  // prima riga del quadro dopo (CRT Shrink interlacciato); altrimenti 0
-	input  wire  [8:0] render_y_nat,    // riga naturale del quadro (mai compressa): vblank vero per la copia della tabella
-	input  wire  [1:0] snap_mode,       // CRT Shrink: Y arrotondata alla griglia (1 = 1/2, 3 = 1/4; 0 e 2 niente), anche interlacciato
+	input  wire  [8:0] render_y_next,   // riga della riga di display dopo (render_y+1)
+	input  wire  [8:0] render_y_nat,    // riga del quadro: vblank per la copia della tabella
 
 	// X offset (scroll-dependent, from MAME draw_sprites x_offs parameter)
 	input  wire  [9:0] x_offset,
@@ -85,11 +83,7 @@ module darius_sprite_renderer #(
 	output wire [23:0] sprite_rgb,
 	output wire  [1:0] sprite_prio,
 	output wire        sprite_opaque,
-	output wire [12:0] dbg_disp_word,
-
-	// Follow-cam: tracking navicella
-	output reg   [9:0] ship_x,      // ultima X valida (coord. schermo)
-	output reg         ship_commit  // pulse 1 clk a ogni aggiornamento
+	output wire [12:0] dbg_disp_word
 );
 
 localparam H_ACTIVE = 10'd864;
@@ -191,8 +185,7 @@ end
 reg [10:0] copy_idx;
 reg        copy_done;
 reg  [8:0] prev_render_y_copy;
-// 04/11: riga naturale, non render_y: con il CRT Shrink render_y e' 300 fuori dalla finestra e la copia partiva alla fine
-// della finestra (riga 168 con 1/2) invece che al vblank vero (224), quando il gioco aggiorna la tabella.
+// La copia parte al vblank (riga 224 del quadro), quando il gioco aggiorna la tabella.
 wire vblank_copy = (render_y_nat >= V_ACTIVE);
 always @(posedge clk) begin
 	if (reset) begin
@@ -232,49 +225,6 @@ always @(posedge clk) begin
 	if (reset) max_idx_used <= 9'd0;
 	else if (spr_wr && (spr_wr_addr[10:2] > max_idx_used))
 		max_idx_used <= spr_wr_addr[10:2];
-end
-
-// =====================================================================
-// Follow-cam: snoop entry navicella
-// =====================================================================
-// Nave = slot 7 ($E00138), code $3E5-$3E7 (rotazione fiamma).
-// Verificato: MAME attract (slot 7 = code $3E6 128/128 frame demo) +
-// Darius-Native main_annotated.md ("La nave è a $E00138, code $3E6").
-// Word addr 0-based (base $080): X = $E0013A -> 11'h01D, code = $E0013C -> 11'h01E.
-// Commit order-independent (clear di frame scrive X=$380/code=0 prima del
-// rewrite): X candidata filtrata dal valore park $380 (>=880 = offscreen),
-// commit su write X con code valido O su write code valido con X plausibile.
-localparam [10:0] SHIP_X_WADDR    = 11'h01D;
-localparam [10:0] SHIP_CODE_WADDR = 11'h01E;
-
-reg [9:0] ship_cand_x;
-reg       ship_code_ok;
-wire      wr_x_plausible  = spr_wr_data[9:0] < 10'd880;
-wire      cand_plausible  = ship_cand_x < 10'd880;
-wire      wr_code_is_ship = (spr_wr_data[12:0] >= 13'h03E5) && (spr_wr_data[12:0] <= 13'h03E7);
-
-always @(posedge clk) begin
-	ship_commit <= 1'b0;
-	if (reset) begin
-		ship_cand_x  <= 10'd880;
-		ship_code_ok <= 1'b0;
-		ship_x       <= 10'd432;
-	end else if (spr_wr) begin
-		if (spr_wr_addr == SHIP_X_WADDR) begin
-			ship_cand_x <= spr_wr_data[9:0];
-			if (ship_code_ok && wr_x_plausible) begin
-				ship_x      <= spr_wr_data[9:0];
-				ship_commit <= 1'b1;
-			end
-		end
-		if (spr_wr_addr == SHIP_CODE_WADDR) begin
-			ship_code_ok <= wr_code_is_ship;
-			if (wr_code_is_ship && cand_plausible) begin
-				ship_x      <= ship_cand_x;
-				ship_commit <= 1'b1;
-			end
-		end
-	end
 end
 
 // =====================================================================
@@ -414,22 +364,6 @@ reg [12:0] sc_code;
 reg        sc_flipx, sc_flipy;
 reg  [6:0] sc_color;
 reg        sc_prio;
-// CRT Shrink (04/11): Y dello sprite arrotondata alla griglia delle righe campionate dalla finestra (anche interlacciato:
-// il campo pari mostra sempre le righe pari dello sprite, il dispari le dispari, mezza riga sotto),
-// cosi' ogni sprite mostra sempre le stesse sue righe in ogni quadro (la nave non va piu' giu' e su). snap_mode: 0 niente,
-// 1 = 1/2 (riga pari), 3 = 1/4 (multiplo di 4 piu' vicino). 1/3 (2) resta senza: la griglia ha passo 3 e gli oggetti sono
-// fatti di pezzi da 16 righe; 16 non e' multiplo di 3, i pezzi scatterebbero in quadri diversi e l'oggetto si spezzerebbe.
-function automatic [8:0] snap_y(input [8:0] sy, input [1:0] m);
-	reg [8:0] t;
-	begin
-		t = sy + 9'd2;
-		case (m)
-			2'd1:    snap_y = {sy[8:1], 1'b0};
-			2'd3:    snap_y = {t[8:2], 2'b00};
-			default: snap_y = sy;
-		endcase
-	end
-endfunction
 
 reg  [3:0] sc_row_diff_hit;
 reg  [3:0] sc_draw_row;
@@ -478,7 +412,7 @@ always @(posedge clk) begin
 		// Start scan quando il draw inizia a preparare una nuova linea (D_CLEAR).
 		// sc_line_y = prep_line_y latchata; mf_w azzerato = FIFO ripartita per la linea.
 		if (new_line) begin
-			sc_line_y <= (render_y_next >= V_ACTIVE) ? render_y_first : render_y_next;   // spento: = (render_y >= 223) ? 0 : render_y+1
+			sc_line_y <= (render_y_next >= V_ACTIVE) ? 9'd0 : render_y_next;   // = (render_y >= 223) ? 0 : render_y+1
 			sc_idx    <= max_idx_used;
 			mf_w      <= 7'd0;
 			sc_run    <= 1'b1;
@@ -498,7 +432,7 @@ always @(posedge clk) begin
 					reg [8:0] sy_calc;
 					reg [8:0] row_diff;
 					sy_calc = (9'd256 - spr_rdata[8:0] - 9'd16 + spr_yoff[8:0]) & 9'h1FF;
-					row_diff = (sc_line_y - snap_y(sy_calc, snap_mode)) & 9'h1FF;   // 0 = Y invariata
+					row_diff = (sc_line_y - sy_calc) & 9'h1FF;
 					if (row_diff < 9'd16) begin
 						sc_row_diff_hit <= row_diff[3:0];
 						spr_rd_addr     <= {sc_idx, 2'b01};
@@ -586,7 +520,7 @@ always @(posedge clk) begin
 		if (new_line) begin
 			spr_disp_sel <= lb_buf_sel;
 			lb_buf_sel   <= ~lb_buf_sel;
-			prep_line_y  <= (render_y_next >= V_ACTIVE) ? render_y_first : render_y_next;   // idem
+			prep_line_y  <= (render_y_next >= V_ACTIVE) ? 9'd0 : render_y_next;   // idem
 			clear_addr   <= 0;
 			mf_r         <= 7'd0;   // riparte a drenare la FIFO della nuova linea
 			draw_state   <= D_CLEAR;

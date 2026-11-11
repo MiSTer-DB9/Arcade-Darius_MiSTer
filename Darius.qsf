@@ -142,7 +142,6 @@ set_global_assignment -name VERILOG_FILE rtl/jt5205/jt5205_adpcm.v
 set_global_assignment -name VERILOG_FILE rtl/jt5205/jt5205_interpol2x.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/audio_mixer_gain.sv
 set_global_assignment -name PRE_FLOW_SCRIPT_FILE "quartus_sh:sys/build_id.tcl"
-set_global_assignment -name POST_FLOW_SCRIPT_FILE "quartus_sh:sys/post_flow_rbf_date.tcl"
 set_location_assignment PIN_U9 -to ADC_CONVST
 set_location_assignment PIN_V10 -to ADC_SCK
 set_location_assignment PIN_AC4 -to ADC_SDI
@@ -344,8 +343,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_shared_ram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_local_ram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_sprite_renderer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/sprite_rom_cache.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_followcam.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/crt_adjust.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_ddram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/ss/savestate.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/ss/savestate_ddr.sv
@@ -369,7 +366,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/rom_cache.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_panel_renderer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_vram_arbiter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/triple_screen_test.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_vshrink.sv
 set_global_assignment -name VERILOG_FILE rtl/pll.v
 set_instance_assignment -name FAST_INPUT_REGISTER ON -to SDRAM_DQ[*]
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to HDMI_TX_CLK

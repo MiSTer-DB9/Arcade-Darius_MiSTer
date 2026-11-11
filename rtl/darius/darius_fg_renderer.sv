@@ -31,8 +31,7 @@ module darius_fg_renderer (
 	input  wire        reset,
 	input  wire  [9:0] render_x,
 	input  wire  [8:0] render_y,
-	input  wire  [8:0] render_y_next,   // riga sorgente della riga di display dopo (CRT Shrink); spento = render_y+1
-	input  wire  [8:0] render_y_first,  // prima riga del quadro dopo (CRT Shrink interlacciato); altrimenti 0
+	input  wire  [8:0] render_y_next,   // riga della riga di display dopo (render_y+1)
 
 	// FG RAM read (via Port B mux)
 	output reg  [13:0] fg_ram_addr,
@@ -221,7 +220,7 @@ always @(posedge clk) begin
 
 		// VBlank: prepare line 0 for next frame
 		if (vblank_start) begin
-			next_prep_y <= render_y_first;   // 0 senza interlacciato
+			next_prep_y <= 9'd0;
 			prep_done   <= 1'b0;
 		end
 

@@ -79,11 +79,9 @@ module darius_dual68k_top
 	input  wire [15:0] sub_rom_rdata,
 	input  wire        sub_rom_ready,
 	input  wire [9:0]  render_x,
-	input  wire [8:0]  render_y,        // riga sorgente mostrata (compressa con CRT Shrink): ai renderer
-	input  wire [8:0]  render_y_next,   // riga sorgente da preparare per la riga dopo: ai renderer
-	input  wire [8:0]  render_y_first,  // prima riga del quadro dopo (CRT Shrink interlacciato; altrimenti 0): ai renderer
-	input  wire [1:0]  spr_snap,        // CRT Shrink: Y degli sprite alla griglia della finestra (status[29:28]; 0 niente)
-	input  wire [8:0]  render_y_nat,    // riga NATURALE: IRQ4 e savestate, mai compressa
+	input  wire [8:0]  render_y,        // riga mostrata: ai renderer
+	input  wire [8:0]  render_y_next,   // riga da preparare per la riga dopo: ai renderer
+	input  wire [8:0]  render_y_nat,    // riga del quadro: IRQ4 e savestate
 	input  wire [31:0] tilerom_data,
 	input  wire        tilerom_valid,
 	output wire [23:0] main_rom_addr,
@@ -119,9 +117,6 @@ module darius_dual68k_top
 	output wire [23:0] sprite_rgb,
 	output wire  [1:0] sprite_prio,
 	output wire        sprite_opaque,
-	// Follow-cam: tracking navicella
-	output wire  [9:0] ship_x,
-	output wire        ship_commit,
 	// OSD layer offsets
 	input  wire signed [9:0] l0_xoff, l0_yoff,
 	input  wire signed [9:0] l1_xoff, l1_yoff,
@@ -275,7 +270,7 @@ wire vblank_area_top = (render_y_nat >= 9'd224);
 
 generate if (ENABLE_VBLANK_IRQ) begin : gen_vblank_irq
 	// 60Hz VBlank from render_y_nat: assert when the natural line enters vblank region
-	// V_ACTIVE=224, vblank starts at vc >= 224 (render_y_nat = vc, never compressed by CRT Shrink)
+	// V_ACTIVE=224, vblank starts at vc >= 224 (render_y_nat = vc)
 	wire vblank_area = (render_y_nat >= 9'd224);
 	reg  vblank_prev;
 	reg  main_irq4_pending;
@@ -1063,7 +1058,7 @@ darius_panel_renderer #(.X_OFFSET(10'd0), .H_PIXELS(10'd288), .SS_IDX(SS_IDX_PAL
 	.ss_regs_ld(ss_regs_ld),
 	.ss_xs0(ss_xs0), .ss_xs1(ss_xs1), .ss_ys0(ss_ys0), .ss_ys1(ss_ys1), .ss_c0(ss_c0), .ss_c1(ss_c1),
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next),
 	.cpu_bus_addr(main_bus_addr), .cpu_bus_asn(main_bus_asn),
 	.cpu_bus_rnw(main_bus_rnw), .cpu_bus_dsn(main_bus_dsn),
 	.cpu_bus_wdata(main_bus_dout), .cpu_bus_cs(main_bus_cs),
@@ -1087,7 +1082,7 @@ darius_panel_renderer #(.X_OFFSET(10'd288), .H_PIXELS(10'd288), .SS_IDX(SS_IDX_P
 	.ss_regs_ld(ss_regs_ld),
 	.ss_xs0(ss_xs0), .ss_xs1(ss_xs1), .ss_ys0(ss_ys0), .ss_ys1(ss_ys1), .ss_c0(ss_c0), .ss_c1(ss_c1),
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next),
 	.cpu_bus_addr(main_bus_addr), .cpu_bus_asn(main_bus_asn),
 	.cpu_bus_rnw(main_bus_rnw), .cpu_bus_dsn(main_bus_dsn),
 	.cpu_bus_wdata(main_bus_dout), .cpu_bus_cs(main_bus_cs),
@@ -1110,7 +1105,7 @@ darius_panel_renderer #(.X_OFFSET(10'd576), .H_PIXELS(10'd288), .SS_IDX(SS_IDX_P
 	.ss_regs_ld(ss_regs_ld),
 	.ss_xs0(ss_xs0), .ss_xs1(ss_xs1), .ss_ys0(ss_ys0), .ss_ys1(ss_ys1), .ss_c0(ss_c0), .ss_c1(ss_c1),
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next),
 	.cpu_bus_addr(main_bus_addr), .cpu_bus_asn(main_bus_asn),
 	.cpu_bus_rnw(main_bus_rnw), .cpu_bus_dsn(main_bus_dsn),
 	.cpu_bus_wdata(main_bus_dout), .cpu_bus_cs(main_bus_cs),
@@ -1197,7 +1192,7 @@ end
 
 darius_fg_renderer u_fg_renderer (
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next),
 	.fg_ram_addr(fg_render_addr),
 	.fg_ram_rdata(fg_render_rdata),
 	.fg_stall(fg_render_stall),
@@ -1284,7 +1279,7 @@ end
 darius_sprite_renderer #(.SS_IDX(SS_IDX_SPR_LOC)) u_sprite (
 	.ssbus(ssb[SS_IDX_SPR_LOC]),
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first), .render_y_nat(render_y_nat), .snap_mode(spr_snap),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_nat(render_y_nat),
 	.x_offset(10'd0),  // wide-screen: sprites use raw sx, no panel offset needed
 	.cpu_bus_addr(main_bus_addr), .cpu_bus_asn(main_bus_asn),
 	.cpu_bus_rnw(main_bus_rnw), .cpu_bus_dsn(main_bus_dsn),
@@ -1297,8 +1292,7 @@ darius_sprite_renderer #(.SS_IDX(SS_IDX_SPR_LOC)) u_sprite (
 	.spr_xoff(spr_xoff), .spr_yoff(spr_yoff),
 	.pal_data(sprite_pal_data), .pal_lookup_addr(sprite_pal_addr),
 	.sprite_rgb(sprite_rgb), .sprite_prio(sprite_prio), .sprite_opaque(sprite_opaque),
-	.dbg_disp_word(),
-	.ship_x(ship_x), .ship_commit(ship_commit)
+	.dbg_disp_word()
 );
 
 // Cache ROM sprite interposta (renderer <-> cache <-> porta grafica 3). Port di Darius2

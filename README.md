@@ -27,10 +27,20 @@ one continuous 864-pixel-wide playfield.
 
 ## Status
 
-**Current version: 1.9** (November 2026).
+**Current version: 1.9.1** (November 2026).
 
 The core runs the full game end-to-end on all supported ROM sets and has been
 tested on real MiSTer hardware.
+
+## What's new in 1.9.1
+
+- **Removed:** CRT Shrink and CRT Shrink Interlace, CRT Adjust (H-Size,
+  H-Position, V-Shift), Triple CRT Wide and the single-monitor screen views
+  (Follow, Follow 4:3+, Follow Wide, Screen Jump). The core shows the native
+  triple screen, as the original board does; the Triple view is unchanged.
+  These features are in the `rm` line (see below).
+- **sys/** is the official MiSTer framework, unmodified: the build hook that
+  made a dated copy of the RBF is no longer in `sys/`.
 
 ## What's new in 1.9
 
@@ -107,25 +117,6 @@ readers. Every chip timing is a parameter in picoseconds.
 
 ### Video
 
-- **CRT Shrink** — new: the picture compressed vertically to 1/2, 1/3 or 1/4,
-  for CRTs, without a frame buffer and without moving the sync. See
-  [CRT Shrink](#crt-shrink) for how it works.
-- **CRT Shrink Interlace** — new: an interlaced mode that shows, over two
-  fields, twice the lines of the plain shrink (with 1/2, all 224 lines of the
-  picture).
-- **Sprites locked to the shrink grid** (1/2 and 1/4): a sprite moving by one
-  line no longer bobs up and down between frames.
-- **CRT Adjust, H-Position**: the picture moves left **without disappearing
-  into the blanking**, and the range grows from ±48 to −64…+63 steps of 4
-  pixels.
-- **CRT Adjust, H-Size**: the picture now stretches and squeezes around its
-  **centre**, which stays in place; before, it grew to the right and shrank to
-  the left.
-- **CRT Adjust with the interlaced shrink**: the vertical sync keeps its
-  position within the line, so the two fields stay interlaced.
-- **Follow views**: the last line of the picture (line 223) is now visible on a
-  CRT, and with the shrink the first line of the window no longer shows the
-  bottom of the previous frame.
 - **VRAM arbiter fix**: after a turn to the centre panel, the centre panel was
   no longer served until a side panel asked — the line glitch on the
   wireframe ships of the attract sequence is gone.
@@ -171,10 +162,6 @@ readers. Every chip timing is a parameter in picoseconds.
   each of the nine channels in the OSD
 - PC060HA main/sub communication
 - Experimental savestate (16 slots) from the OSD
-- Experimental **screen views** for one monitor: Follow, Follow 4:3+, Follow
-  Wide, Screen Jump, and Triple CRT Wide
-- **CRT Adjust** (H-Size, H-Position, V-Shift) and **CRT Shrink** (1/2, 1/3,
-  1/4, with an interlaced mode)
 - Inputs (coin, start, 8-way joystick) and full DIP switch support
 - MiSTer OSD with video, audio-mix, pause and DIP options
 - Pause synchronized to the frame, with the picture dimmed while paused
@@ -186,122 +173,6 @@ readers. Every chip timing is a parameter in picoseconds.
 - Darius (Japan) (`dariuso`)
 - Darius (Japan, rev 1) (`dariusj`)
 - Darius Extra Version (Japan) (`dariuse`)
-
-## CRT Shrink
-
-Darius was built for three monitors side by side: its picture is 864 pixels
-wide and 224 lines tall. On one CRT the whole width fits in a line (Triple CRT
-Wide), but then the picture is three times too tall for its width. **CRT
-Shrink** compresses it vertically, so the triple screen keeps proportions
-close to the original cabinet — **1/3** gives the proportions of the three
-monitors — while the CRT keeps receiving its native 15 kHz signal.
-
-| CRT Shrink | Window | Source lines per display line |
-|------------|--------|-------------------------------|
-| Off        | 224 lines | 1 |
-| 1/2        | 112 lines | 2 (every other line) |
-| 1/3        | 75 lines  | about 3 |
-| 1/4        | 56 lines  | 4 (one line in four) |
-
-**It is not a scaler, and it has no frame buffer.** No line is stored and no
-line is moved in time. The window is centred in the frame, and for each
-display line inside it the core asks the renderers — the tile panels, the
-sprites and the text layer — to draw one source line, advancing by 224/N
-source lines per display line (an 8.8 fixed-point accumulator, the only state
-the module keeps). The renderers prepare that line during the line before, as
-they always do, so the picture comes out of the renderers already compressed.
-Outside the window the renderers stay idle and the lines are black. The
-horizontal and vertical sync are untouched: the CRT sees the same signal as
-without the shrink, so it never loses lock. 1/2 and 1/4 are exact integer
-ratios, so the lines are dropped uniformly.
-
-The game itself does not notice: its line interrupt, the savestate and the
-follow views keep using the natural line count of the frame, and the sprite
-list is copied at the natural line 224, as without the shrink.
-
-**Interlaced mode** (CRT Shrink Interlace, for CRTs). The plain shrink drops
-lines: with 1/2, one source line in two is never shown. The interlaced mode
-alternates two fields:
-- the even field has 263 lines, with the vertical sync starting in the middle
-  of a line; the odd field has 262 lines, with the vertical sync at the start
-  of a line: 262.5 lines between two syncs, so the CRT draws the odd field half
-  a line below the even one;
-- the odd field shows the source lines half a step further on (with 1/2: lines
-  1, 3, 5… while the even field shows 0, 2, 4…).
-
-Over two fields the CRT shows twice the lines of the plain shrink — with 1/2,
-all 224 lines of the picture. The field is signalled to the framework on
-`VGA_F1`.
-
-**Sprites on the shrink grid.** The window takes its source lines on a fixed
-grid (with 1/2: 0, 2, 4…). A sprite that moves down by one source line would
-show its even rows in one frame and its odd rows, half a line lower, in the
-next: it would bob up and down, especially on diagonals. With 1/2 and 1/4 the
-vertical position of every sprite is rounded to the grid, so each sprite always
-shows the same rows of itself: without interlace it moves by whole display
-lines; with interlace the even field always shows its even rows and the odd
-field its odd rows, half a line lower. 1/3 has no rounding: its grid has a step
-of 3, while the objects are made of 16-line pieces, which would round to
-different lines and split the object.
-
-The shrink works together with CRT Adjust (with the interlaced shrink, the
-vertical sync keeps its position within the line through the line buffer) and
-with the follow views.
-
-## CRT Adjust
-
-**CRT Adjust** is an analog CRT geometry / alignment tool in the OSD: a single
-line buffer that provides **three live controls** for lining the image up on a
-real CRT.
-
-| Control        | What it does                                                       |
-|----------------|--------------------------------------------------------------------|
-| **H-Size**     | Horizontal stretch / squeeze, −16 to +15 — **integer** (every source pixel is emitted for a whole number of pixel clocks), around the centre of the picture, which stays in place |
-| **H-Position** | Horizontal image shift, −64 to +63 steps of 4 pixels — moves the picture **content**, not the sync |
-| **V-Shift**    | Vertical line shift, −16 to +15                                     |
-
-**Why it never desyncs the CRT.** The picture **content** is shifted and
-resized through the line buffer while the horizontal/vertical **sync signals
-stay native**. The CRT keeps its lock at all times, so you can slide and resize
-the image **live** without the screen rolling or losing hold.
-
-Because the resize is **integer** (no fractional ratio, no per-pixel
-nearest-neighbor) and the output is the byte-exact source pixel, there is **no
-shimmering** on moving content and **no blending / blur**.
-
-The module sits in the core, at the video-output boundary. The adjustment
-reaches the analog output **and HDMI follows it too**: leave CRT Adjust **Off**
-(default) for an untouched HDMI image, and turn it on when aligning on an
-analog CRT.
-
-## Screen views (experimental)
-
-On a single display the native 864-pixel triple panel is a very wide, short
-image. The core adds display modes that reshape it for one monitor **without
-touching the game logic** and while keeping the native 15.7 kHz line rate.
-
-The picture is captured **after** the compositor, buffered per line
-(lossless), and re-emitted into a **wider active window** with **integer pixel
-repeat** — so the image genuinely grows on a CRT with no blur and no shimmer.
-
-| Screen View       | What you get                                                    |
-|-------------------|-----------------------------------------------------------------|
-| **Triple**        | Native triple panel (864 px) — unchanged                        |
-| **Follow**        | 288-pixel window (one panel) that follows the Silver Hawk       |
-| **Follow 4:3+**   | 320-pixel window that follows the Silver Hawk                   |
-| **Follow Wide**   | 432-pixel window (about one and a half panels) that follows the Silver Hawk |
-| **Screen Jump**   | 288-pixel window that **jumps** panel to panel with the action  |
-
-The follow views track the ship (deadzone + smooth slew, updated at the end of
-vblank) and ease back to the playfield centre when the ship is absent (title,
-death).
-
-**Triple CRT Wide** re-emits the native triple screen at a wider integer rate
-(864 active pixels over about 1018 slots), so the whole triple screen fills a
-CRT line — integer 1:1 repeat, no scaling.
-
-All of the above are opt-in from the OSD and leave the default **Triple** view
-untouched.
 
 ## Screenshots
 
@@ -403,8 +274,6 @@ Arcade-Darius_MiSTer/
   PC090OJ / PC060HA hardware, memory maps and timing.
 - **Sorgelig** and the **MiSTer-devel team** for the framework, the DDR3
   adapter and Template.
-- **Andrea Bogazzi** ([@asturur](https://github.com/asturur)) for help with the
-  CRT Adjust implementation.
 
 Full list in [AUTHORS.md](AUTHORS.md).
 
@@ -423,10 +292,11 @@ If you enjoy this core and want to support its development:
 - [YouTube](https://www.youtube.com/c/IBeceriVideoludici) — playlists and videos
 - [X / Twitter](https://x.com/rmonic79)
 
-## Pause overlay: the `rm` line
+## Extra features: the `rm` line
 
-One feature is deliberately not in this core: the pause overlay, with the logo, the
-supporters list and the scrolling credits shown while the game is paused. It lives
+Some features are deliberately not in this core: the pause overlay, with the logo,
+the supporters list and the scrolling credits shown while the game is paused, CRT
+Shrink, CRT Adjust, Triple CRT Wide and the single-monitor screen views. They live
 in a parallel line of builds called **`rm`**, published separately:
 
 - [rm-Darius_MiSTer](https://github.com/rmonic79/rm-Darius_MiSTer)
