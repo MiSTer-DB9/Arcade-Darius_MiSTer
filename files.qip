@@ -11,6 +11,5 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_local_ram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_panel_renderer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_fg_renderer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/triple_screen_test.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_vshrink.sv
 set_global_assignment -name VERILOG_FILE rtl/pll.v
 set_global_assignment -name QIP_FILE rtl/pll.qip

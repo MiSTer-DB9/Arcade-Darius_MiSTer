@@ -44,13 +44,9 @@ module triple_screen_test
 	output        VBlank,
 	output        VSync,
 	output  [9:0] render_x,
-	output  [8:0] render_y,       // riga sorgente mostrata (compressa con CRT Shrink), ai renderer
-	output  [8:0] render_y_next,  // riga sorgente da preparare per la riga dopo, ai renderer
-	output  [8:0] render_y_nat,   // riga NATURALE (vc): IRQ4, savestate, follow-cam; mai compressa
-	input   [1:0] vshrink,        // CRT Shrink: 0 = Off, 1 = 1/2, 2 = 1/3, 3 = 1/4 (darius_vshrink)
-	input         vshrink_ilace,  // CRT Shrink interlacciato (solo con vshrink != 0): campi alterni di 262 e 263 righe
-	output  [8:0] render_y_first, // prima riga sorgente del quadro dopo (0 senza interlacciato), ai renderer
-	output        field,          // campo dell'interlacciato (VGA_F1): 1 = dispari
+	output  [8:0] render_y,       // riga mostrata (vc), ai renderer
+	output  [8:0] render_y_next,  // riga da preparare per la riga dopo (vc + 1), ai renderer
+	output  [8:0] render_y_nat,   // riga del quadro (vc): IRQ4, savestate
 	output  [7:0] R,
 	output  [7:0] G,
 	output  [7:0] B
@@ -76,13 +72,6 @@ reg  [1:0] pxl_div;
 
 reg [10:0] hc = 0;
 reg  [8:0] vc = 0;
-// CRT Shrink interlacciato: 262,5 righe fra due VSync. Il VSync sposta le righe del quadro DOPO: il campo pari ha 263
-// righe e il VSync da meta' riga, il dispari 262 righe e il VSync a inizio riga, cosi' il CRT disegna il campo
-// dispari (righe sorgente da mezzo passo) mezza riga piu' in basso del pari. Senza interlacciato fld resta a 0.
-wire       ilace_on = vshrink_ilace && (vshrink != 2'd0);
-reg        fld = 1'b0;
-wire       vs_mid   = ilace_on && !fld;                      // campo pari dell'interlacciato: 263 righe, VSync da meta' riga
-wire [8:0] v_last   = vs_mid ? (V_TOTAL) : (V_TOTAL - 1'd1); // ultima riga del quadro: 262 nel campo pari interlacciato
 
 always @(posedge clk) begin
 	if(reset) begin
@@ -90,15 +79,14 @@ always @(posedge clk) begin
 		vc <= 0;
 		pxl_en <= 0;
 		pxl_div <= 0;
-		fld <= 1'b0;
 	end else begin
 		pxl_div <= pxl_div + 2'd1;
 		pxl_en <= (pxl_div[0] == 1'b1);   // ogni 2 clk, stessa fase in tempo della /4 a 96
 		if(pxl_en) begin
 			if(hc == H_TOTAL - 1'd1) begin
 				hc <= 0;
-				if(vc == v_last) begin vc <= 0; fld <= ilace_on ? ~fld : 1'b0; end
-				else                vc <= vc + 1'd1;
+				if(vc == V_TOTAL - 1'd1) vc <= 0;
+				else                     vc <= vc + 1'd1;
 			end else begin
 				hc <= hc + 1'd1;
 			end
@@ -106,22 +94,12 @@ always @(posedge clk) begin
 	end
 end
 
-// CRT Shrink (darius_vshrink): con lo shrink acceso l'attivo verticale e' la finestra compressa (nero sopra e sotto,
-// temporizzazione invariata); spento e' vc < V_ACTIVE come prima.
-wire in_win;
-wire v_disp_active = (vshrink == 2'd0) ? (vc < V_ACTIVE) : in_win;
+wire v_disp_active = (vc < V_ACTIVE);
 wire active = (hc < H_ACTIVE) && v_disp_active;
 assign HBlank = ~((hc < H_ACTIVE));
 assign VBlank = ~v_disp_active;
 assign HSync  = ~((hc >= (H_ACTIVE + H_FP)) && (hc < (H_ACTIVE + H_FP + H_SYNC)));
-// campo pari interlacciato: VSync da meta' della riga V_ACTIVE+V_FP a meta' della riga V_ACTIVE+V_FP+V_SYNC
-localparam [10:0] H_HALF = H_TOTAL >> 1;   // 763
-wire vs_full = (vc >= (V_ACTIVE + V_FP)) && (vc < (V_ACTIVE + V_FP + V_SYNC));
-wire vs_half = ((vc == (V_ACTIVE + V_FP)) && (hc >= H_HALF)) ||
-               ((vc > (V_ACTIVE + V_FP)) && (vc < (V_ACTIVE + V_FP + V_SYNC))) ||
-               ((vc == (V_ACTIVE + V_FP + V_SYNC)) && (hc < H_HALF));
-assign VSync  = ~(vs_mid ? vs_half : vs_full);
-assign field  = fld;
+assign VSync  = ~((vc >= (V_ACTIVE + V_FP)) && (vc < (V_ACTIVE + V_FP + V_SYNC)));
 assign ce_pix = pxl_en;
 
 wire [9:0] screen_x = hc[9:0];
@@ -130,22 +108,9 @@ wire [8:0] screen_y = vc;
 // render_y keeps actual line so FG renderer can start during hblank.
 // During vblank: screen_y >= V_ACTIVE naturally, so render_y < V_ACTIVE fails.
 assign render_x = active ? screen_x : 10'd900;
-assign render_y_nat = screen_y;
-// render_y / render_y_next: con shrink spento vc e vc+1, i valori di prima (darius_vshrink.sv)
-darius_vshrink u_vshrink (
-	.clk          (clk),
-	.reset        (reset),
-	.pxl_en       (pxl_en),
-	.line_end     (hc == H_TOTAL - 1'd1),
-	.vc           (vc),
-	.vshrink      (vshrink),
-	.fld          (fld),
-	.fld_next     (ilace_on && !fld),
-	.render_y     (render_y),
-	.render_y_next(render_y_next),
-	.in_win       (in_win),
-	.render_y_first(render_y_first)
-);
+assign render_y_nat  = screen_y;
+assign render_y      = screen_y;
+assign render_y_next = screen_y + 9'd1;
 
 reg [7:0] r;
 reg [7:0] g;

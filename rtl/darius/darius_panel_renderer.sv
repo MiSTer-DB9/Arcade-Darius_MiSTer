@@ -47,8 +47,7 @@ module darius_panel_renderer
 	input  wire [15:0] ss_xs0, ss_xs1, ss_ys0, ss_ys1, ss_c0, ss_c1,
 	input  wire  [9:0] render_x,
 	input  wire  [8:0] render_y,
-	input  wire  [8:0] render_y_next,   // riga sorgente della riga di display dopo (CRT Shrink); spento = render_y+1
-	input  wire  [8:0] render_y_first,  // prima riga del quadro dopo (CRT Shrink interlacciato); altrimenti 0
+	input  wire  [8:0] render_y_next,   // riga della riga di display dopo (render_y+1)
 
 	// CPU bus sniff (scroll/ctrl registers only)
 	input  wire [23:0] cpu_bus_addr,
@@ -253,11 +252,11 @@ reg        prep_linebuf_we;
 reg  [8:0] prep_linebuf_addr;
 reg [13:0] prep_linebuf_data;
 reg        prep_layer;  // 0=Layer0 (background), 1=Layer1 (foreground)
-// riga da preparare per la riga di display dopo: render_y_next (CRT Shrink), a 0 dopo l'ultima (224).
-// Con shrink spento render_y_next = render_y+1: identico a ((render_y >= V_ACTIVE-1) ? 0 : render_y+1) di prima
+// riga da preparare per la riga di display dopo: render_y_next = render_y+1, a 0 dopo l'ultima (224):
+// identico a ((render_y >= V_ACTIVE-1) ? 0 : render_y+1)
 // per ogni render_y < V_ACTIVE, l'unico caso in cui si prepara (start_of_line); sul ramo dello scambio
 // prep_line_y == render_y, quindi anche il prep_next_line_y di prima era questo valore.
-wire [8:0] prep_next_line_y = (render_y_next >= V_ACTIVE) ? render_y_first : render_y_next;   // 0 senza interlacciato
+wire [8:0] prep_next_line_y = (render_y_next >= V_ACTIVE) ? 9'd0 : render_y_next;
 
 // Latched scroll + ctrl per layer — captured at start of each line prep (like HBlank latch in real PC080SN)
 reg  [9:0] prep_xscroll_lat  [0:1];

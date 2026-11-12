@@ -38,11 +38,6 @@ most restrictive upstream (JT12 / JT5205 / JTFRAME).
 | **DDR3 adapter** — `rtl/darius/darius_ddram.sv` | Sorgelig | [MiSTer-devel](https://github.com/MiSTer-devel) | GPL-3 |
 | **sys/ framework** — MiSTer HPS/IO, OSD, video scaler, audio | Sorgelig (Alexey Melnikov) / MiSTer-devel, with files by Till Harbaum, Ludvig Strigeus, TEMLIB (`ascal.vhd`), Ultra-Embedded (`spdif.v`), bellwood420, Kitrinx, Grabulosaure, Mike Simone; Intel/Altera generated PLL files | [MiSTer-devel/Main_MiSTer](https://github.com/MiSTer-devel/Main_MiSTer) | per file: GPL-2.0-or-later, GPL-3.0-or-later, LGPL-3.0-or-later (`sd_card.sv`), TEMLIB free-use notice (`ascal.vhd`), Intel license (`pll_cfg/`) |
 
-## Contributors
-
-- **Andrea Bogazzi** ([@asturur](https://github.com/asturur)) — help with the CRT
-  Adjust implementation (`rtl/darius/crt_adjust.sv`).
-
 ## Reference
 
 - **Darius arcade hardware** — Taito Corporation, 1986. This FPGA core is a
