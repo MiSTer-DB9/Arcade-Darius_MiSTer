@@ -1,14 +1,14 @@
-/*  This file is part of BoogieWings_MiSTer.
+/*  This file is part of Darius_MiSTer.
     GPL-3.
     Original author: Martin Donlon (wickerwaka) — Arcade-TaitoF2 savestate system.
-    Modified/adapted for BoogieWings by: Umberto Parisi (rmonc79)
+    Modified/adapted by: Umberto Parisi (rmonic79)
 */
 
 //============================================================================
-//  BoogieWings Savestate — core bus (ssbus)
+//  Savestate — core bus (ssbus)
 //
 //  Portato dal sistema savestate di Martin Donlon (wickerwaka) Arcade-TaitoF2.
-//  Riferimento: _reference/taitof2_ss/savestates.sv
+//  Riferimento: savestates.sv di Arcade-TaitoF2 (Martin Donlon)
 //
 //  ssbus_if  : bus a interfaccia. Ogni modulo statefull = slave con SS_IDX univoco.
 //  ssbus_mux : multiplexa N slave verso 1 master (il save_state_data).
@@ -123,8 +123,8 @@ endmodule
 // save: il master legge tutte le parole. load: le riscrive e alza bits_wr (pulse)
 // quando ha finito, così il modulo target ricarica bits_out.
 // Base DDR3 per i 4 slot savestate (2MB/slot). Deve coincidere con la base dichiarata
-// nel CONF_STR "SS<base>:<size>". Per BoogieWings la DDR3 del core è a 0x30000000; gli
-// slot SS vanno in una zona ALTA non usata dalle ROM tile. 0x3E000000 = come Taito F2.
+// nel CONF_STR "SS<base>:<size>" (in Darius "SS3E000000:200000", Template.sv). Gli slot SS
+// vanno in una zona ALTA della DDR3: 0x3E000000 = come Taito F2.
 // (lo stato reale è ~150KB << 2MB/slot).
 `ifndef SS_DDR_BASE_DEF
 `ifdef VERILATOR
@@ -297,66 +297,6 @@ always @(posedge clk) begin
             ssbus.write_ack(SS_IDX);
         end else if (ssbus.read) begin
             ssbus.read_response(SS_IDX, {48'd0, storage1[ ssbus.addr * 16 +: 16 ] });
-        end
-    end
-end
-
-endmodule
-
-module auto_save_lean_adaptor #(parameter N_BITS = 16, SS_IDX = -1)(
-    input clk,
-
-    ssbus_if.slave ssbus,
-
-    input  [N_BITS-1:0] bits_in,
-    output [N_BITS-1:0] bits_out,
-    output reg          bits_wr
-);
-
-localparam N_WORDS = (N_BITS + 15) / 16;
-localparam AW = (N_WORDS <= 1) ? 1 : $clog2(N_WORDS);
-
-reg [15:0]    word_wr;
-reg [AW-1:0]  word_idx;
-
-wire [N_WORDS*16-1:0] padded_in = {{(N_WORDS*16-N_BITS){1'b0}}, bits_in};
-
-// RMW: la word indirizzata viene dal bus, tutte le altre dal chip stesso
-genvar gw;
-generate
-for (gw = 0; gw < N_WORDS; gw = gw + 1) begin : gen_rmw
-    if (gw*16 + 16 <= N_BITS) begin : g_full
-        assign bits_out[gw*16 +: 16] = (bits_wr && word_idx == gw[AW-1:0])
-                                       ? word_wr : bits_in[gw*16 +: 16];
-    end else begin : g_part
-        assign bits_out[N_BITS-1 : gw*16] = (bits_wr && word_idx == gw[AW-1:0])
-                                       ? word_wr[N_BITS-1-gw*16 : 0]
-                                       : bits_in[N_BITS-1 : gw*16];
-    end
-end
-endgenerate
-
-// bits_wr RITARDATO di 2 clk rispetto a word_wr/word_idx: alla cattura le
-// sorgenti del mux RMW sono stabili da 3 periodi -> il multicycle 3 dichiarato
-// nell'SDC sui path adaptor->chip e' VERO PER COSTRUZIONE (le word ssbus
-// arrivano comunque a >=4 clk di distanza: nessuna sovrapposizione).
-reg wr_p1, wr_p2;
-always @(posedge clk) begin
-    wr_p1   <= 0;
-    wr_p2   <= wr_p1;
-    bits_wr <= wr_p2;
-    ssbus.setup(SS_IDX, N_WORDS + 1, 1);
-
-    if (ssbus.access(SS_IDX)) begin
-        if (ssbus.write) begin
-            if (ssbus.addr != N_WORDS) begin
-                word_wr  <= ssbus.data[15:0];
-                word_idx <= ssbus.addr[AW-1:0];
-                wr_p1    <= 1;                    // impulso a T+2: il chip carica (RMW)
-            end
-            ssbus.write_ack(SS_IDX);
-        end else if (ssbus.read) begin
-            ssbus.read_response(SS_IDX, {48'd0, padded_in[ssbus.addr[AW-1:0]*16 +: 16]});
         end
     end
 end

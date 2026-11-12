@@ -32,7 +32,7 @@
 //   Z80 #2: 0000-FFFF ROM (flat, no RAM), I/O port 00 = ADPCM command from Z80#1
 
 module darius_audio_z80 (
-	input  wire        clk,          // 96 MHz system clock
+	input  wire        clk,          // 48 MHz system clock
 	input  wire        reset,
 	input  wire        pause,        // halt Z80+YM when high (keeps sync with main)
 	input  wire  [1:0] clk_sel,      // 00=4MHz, 01=8MHz, 10=2MHz, 11=1MHz
@@ -73,7 +73,7 @@ module darius_audio_z80 (
 	// [SS-HOOK] Savestate — unici punti di aggancio del modulo audio.
 	// Rimozione: cancellare questo blocco porte e i punti [SS-HOOK] sotto;
 	// nel top: ss_zram_we/addr/wdata = ss_zram_cpu_*, ss_amisc_ld = 0.
-	// Chip (T80/jt03/jt5205) NON toccati.
+	// Chip (rmZ80/jt03/jt5205) NON toccati.
 	// =====================================================================
 	output wire        ss_zram_cpu_we,    // lato CPU della porta write ZRAM
 	output wire [11:0] ss_zram_cpu_addr,
@@ -98,8 +98,9 @@ module darius_audio_z80 (
 	input  wire  [7:0] ss_ymrp_data,
 	input  wire        ss_ymrp_wr,
 	output wire        ss_ce_ym,          // [FIX ottava] tick campionamento jt03 (ce_4m_ym)
-	// [SS-HOOK] Fase C: CPU Z80 instrumentate (tv80s auto_ss, 358 bit x2).
-	// Rimozione SS: adaptor nel top a riposo -> auto_ss_wr=0 = trasparente.
+	// [SS-HOOK] Fase C: stato delle due CPU rmZ80 (274 bit, savestate parallelo, rmZ80 docs/07 §4).
+	// La sezione del top resta da 358 bit: rmZ80 ne usa i 274 bassi, gli altri 84 escono a 0.
+	// Rimozione SS: adaptor nel top a riposo -> sswr=0 = trasparente.
 	input  wire [357:0] ss_z80a_ssin,
 	output wire [357:0] ss_z80a_ssout,
 	input  wire         ss_z80a_sswr,
@@ -117,16 +118,16 @@ module darius_audio_z80 (
 );
 
 // =====================================================================
-// Clock enable: selectable Z80 speed from 96 MHz
+// Clock enable: selectable Z80 speed from 48 MHz (02/11: clk_sys 96 -> 48, divisori dimezzati)
 // =====================================================================
 reg [6:0] ce_cnt;
 reg [6:0] ce_div;
 
 always @(*) case (clk_sel)
-	2'd0: ce_div = 7'd24;   // 96/24 = 4 MHz (original)
-	2'd1: ce_div = 7'd12;   // 96/12 = 8 MHz
-	2'd2: ce_div = 7'd48;   // 96/48 = 2 MHz
-	2'd3: ce_div = 7'd96;   // 96/96 = 1 MHz
+	2'd0: ce_div = 7'd12;   // 48/12 = 4 MHz (original)
+	2'd1: ce_div = 7'd6;    // 48/6  = 8 MHz
+	2'd2: ce_div = 7'd24;   // 48/24 = 2 MHz
+	2'd3: ce_div = 7'd48;   // 48/48 = 1 MHz
 endcase
 
 wire ce_4m_raw   = (ce_cnt == ce_div - 7'd1);
@@ -136,14 +137,30 @@ wire ce_4m_n = ce_4m_n_raw & ~pause;
 // [SS-HOOK] cen YM vivo durante il replay (Z80 restano fermi su ce_4m)
 wire ce_4m_ym = ce_4m_raw & (~pause | ss_ymrp_active);
 assign ss_ce_ym = ce_4m_ym;   // [FIX ottava] esposto al replay per limitare il write a 1 ce
+// rmZ80 avanza di MEZZO T-state per cen (rmZ80 docs/02 §8, docs/07 §3): due impulsi per T-state,
+// equidistanti: ce_4m_n (meta') + ce_4m (fine). Con ce_div = 12 cadono a 6 clock l'uno dall'altro
+// (contratto rmZ80: minimo 2). Il resto del modulo (YM, NMI) resta su ce_4m, il ritmo del T-state.
+wire ce_z80 = (ce_4m_raw | ce_4m_n_raw) & ~pause;
 
+// Stato delle due rmZ80 (savestate parallelo): dichiarato qui perche' il contatore legge la fase dello Z80B.
+wire [273:0] ss_z80a_ss_lo, ss_z80b_ss_lo;
+assign ss_z80a_ssout = {84'd0, ss_z80a_ss_lo};
+assign ss_z80b_ssout = {84'd0, ss_z80b_ss_lo};
+wire z80b_fase = ss_z80b_ss_lo[273];   // meta' del T-state dello Z80B: 0 = A, 1 = B (rmZ80 docs/06 §5)
+
+// Contatore come Kaneko (DJ Boy Template.sv, ce_z80x2): FERMO in pausa, cosi' alla ripresa arriva
+// l'impulso che la pausa ha trattenuto e le CPU non si sfasano di mezzo T-state rispetto all'YM.
+// Avanza in pausa solo durante il replay YM, che vuole ce_4m_ym. Dallo Z80B, resettato solo dal
+// reset generale, vale sempre: fase A <-> contatore 0..5 (prossimo impulso ce_4m_n), fase B <->
+// 6..11 (prossimo ce_4m). [SS-HOOK] Al rilascio della pausa-savestate (CPU ancora in pausa) il
+// contatore si rimette nella meta' giusta per la fase ripristinata: 0 con A, ce_div/2 con B.
 always @(posedge clk) begin
 	if (reset)
 		ce_cnt <= 0;
-	else if (ss_restore_release)   // [SS-HOOK] fase deterministica post-restore
-		ce_cnt <= 0;
-	else
-		ce_cnt <= ce_4m ? 7'd0 : ce_cnt + 7'd1;
+	else if (ss_restore_release)
+		ce_cnt <= z80b_fase ? (ce_div >> 1) : 7'd0;
+	else if (~pause | ss_ymrp_active)
+		ce_cnt <= ce_4m_raw ? 7'd0 : ce_cnt + 7'd1;
 end
 
 // =====================================================================
@@ -223,17 +240,18 @@ wire        z80a_wait_n;         // stallo su fetch ROM DDR3 pendente (assegnato
 wire       ym1_irq_n;
 
 // PC060HA NMI: active low, directly from PC060HA.
-// tv80s ri-arma l'edge-detect NMI (Oldnmi_n) solo se vede nmi_n ALTO in un
-// tick ce_4m; T80pa lo faceva a clk pieno. Tra l'ack dello Z80 (snd_full->0,
+// Lo Z80 ri-arma l'edge-detect NMI solo se vede nmi_n ALTO in un cen
+// (rmZ80 docs/04 §4, nmi_lvl al cen prima). Tra l'ack dello Z80 (snd_full->0,
 // nmi_n sale) e il comando successivo del 68k (nmi_n scende) la finestra alta
-// puo' durare <24 clk (68k su griglia /12, comandi back-to-back PAN+SE):
+// puo' durare <12 clk (68k su griglia /6, comandi back-to-back PAN+SE):
 // finestra persa -> edge del comando dopo mai visto -> comando musicale perso
-// (frase/strumento mai avviato). Tutto e' derivato dallo stesso 96MHz ->
+// (frase/strumento mai avviato). Tutto e' derivato dallo stesso 48MHz ->
 // race deterministica -> mancano sempre le stesse frasi. Fix speculare a
 // msm_nmi_hold: ogni fase alta catturata a clk pieno e presentata per almeno
-// un tick ce_4m prima di mostrare il basso (= equivalenza T80pa; +1 tick di
+// un tick ce_4m prima di mostrare il basso (+1 tick di
 // latenza NMI, 250ns, irrilevante). Nessun edge spurio: scatta solo se
 // snd_nmi_n e' realmente basso (comando pendente).
+// ce_4m e' uno dei due ce_z80, quindi l'alto resta visibile ad almeno un cen.
 reg nmi_rearm_pend;
 always @(posedge clk) begin
 	if (z80a_reset)     nmi_rearm_pend <= 1'b0;
@@ -248,32 +266,32 @@ wire z80a_int_n = ym1_irq_n;
 // Z80 #1 reset: global reset OR PC060HA sub-reset (MAME: only main audio CPU)
 wire z80a_reset = reset | snd_reset_in;
 
-// tv80s instrumentato auto_ss (savestate rodato F2/NightSlashers). cen singolo:
-// avanza 1 T-state per ce_4m, ESATTAMENTE come T80pa (CEN_p clocca il core,
-// CEN_n era solo ausiliario per gli strobe interni). Mode=0 obbligatorio
-// (default di tv80s; NON overridare) = M1 a 4 T-state + refresh come Z80 reale.
-tv80s z80_audio (
-	.reset_n (~z80a_reset),
-	.clk     (clk),
-	.cen     (ce_4m),
-	.wait_n  (z80a_wait_n),
-	.int_n   (z80a_int_n),
-	.nmi_n   (z80a_nmi_n),
-	.busrq_n (1'b1),
-	.m1_n    (z80a_m1_n),
-	.mreq_n  (z80a_mreq_n),
-	.iorq_n  (z80a_iorq_n),
-	.rd_n    (z80a_rd_n),
-	.wr_n    (z80a_wr_n),
-	.rfsh_n  (z80a_rfsh_n),
-	.halt_n  (),
-	.busak_n (),
-	.A       (z80a_addr),
-	.di      (z80a_din),
-	.dout    (z80a_dout),
-	.auto_ss_in  (ss_z80a_ssin),
-	.auto_ss_out (ss_z80a_ssout),
-	.auto_ss_wr  (ss_z80a_sswr)
+// rmZ80 (rm_CPU/rmZ80_Private, version 1.0): cen = ce_z80, due impulsi per T-state.
+// Reset attivo alto e asincrono (rmZ80 docs/07 §3); busreq_n a 1 (nessuna richiesta del bus).
+// Savestate: ss_load = sswr dell'adaptor, a CPU ferme (pausa-savestate: cen = 0 prima e dopo).
+rmZ80 z80_audio (
+	.clk      (clk),
+	.cen      (ce_z80),
+	.rst      (z80a_reset),
+	.addr     (z80a_addr),
+	.data_in  (z80a_din),
+	.data_out (z80a_dout),
+	.data_oe  (),
+	.mreq_n   (z80a_mreq_n),
+	.iorq_n   (z80a_iorq_n),
+	.rd_n     (z80a_rd_n),
+	.wr_n     (z80a_wr_n),
+	.rfsh_n   (z80a_rfsh_n),
+	.m1_n     (z80a_m1_n),
+	.halt_n   (),
+	.wait_n   (z80a_wait_n),
+	.busreq_n (1'b1),
+	.busack_n (),
+	.int_n    (z80a_int_n),
+	.nmi_n    (z80a_nmi_n),
+	.ss_load  (ss_z80a_sswr),
+	.ss_din   (ss_z80a_ssin[273:0]),
+	.ss_dout  (ss_z80a_ss_lo)
 );
 
 // --- Bank switch register ---
@@ -380,11 +398,10 @@ wire z80a_ym1_sel = !z80a_mreq_n && z80a_rfsh_n && (z80a_addr[15:1] == 15'h4800)
 wire z80a_ym2_sel = !z80a_mreq_n && z80a_rfsh_n && (z80a_addr[15:1] == 15'h5000);  // A000-A001
 wire z80a_ym_sel  = z80a_ym1_sel | z80a_ym2_sel;
 
-// [FIX crackle — timing tv80s verificato] Il tv80s tiene wr_n basso per 2 tick
-// di cen (T2+T3, wr_n registrato basso in tstate[1] e tstate[2] — vedi
-// tv80_auto_ss.v:4180). jt03 (write=!cs&!wr, registra su ce_4m_ym) vedeva OGNI
-// write 2 volte -> sotto carico il 2o tick catturava un bus in transizione ->
-// registro YM corrotto -> crackle. T80pa (vecchio) aveva timing diverso, 1 vista.
+// [FIX crackle] Lo Z80 tiene wr_n basso da T2A a fine T3A (rmZ80 docs/02 §4):
+// tre mezzi T-state, quindi uno o due ce_4m_ym. jt03 (write=!cs&!wr, registra su
+// ce_4m_ym) puo' vedere lo stesso write 2 volte -> sotto carico il 2o tick cattura
+// un bus in transizione -> registro YM corrotto -> crackle.
 // FIX: bloccare la SECONDA vista. Il dato Z80 e' gia' stabile in T2 (registrato
 // dallo Z80 sullo stesso cen). ym_wr_seen si arma DOPO che jt03 ha registrato il
 // write al 1o ce_4m_ym; da li' maschera wr_n verso jt03 fino al rilascio dello
@@ -467,26 +484,28 @@ jt03 u_ym2 (
 // =====================================================================
 // Volume registers from YM2203 I/O ports (MAME: write_portA0/B0/A1/B1)
 // =====================================================================
-// def_vol lookup: 100 / 10^((32 - i*32/15) / 20) for i=0..15
-// Precomputed as 7-bit values (0..100)
+// def_vol lookup (0..100). Valori ricavati dall'uscita di MAME (06/11/2026, banco
+// MiSTer_Utility/Audio_Compare, scansione del volume della porta A col tono FM e PSG del
+// sound test): con questi l'uscita del core coincide con MAME entro 0.12 dB a ogni gradino.
+// I precedenti davano da +1.9 a -6 dB, e l'indice 0 era muto.
 function automatic [6:0] def_vol_lut;
 	input [3:0] idx;
 	case (idx)
-		4'd0:  def_vol_lut = 7'd0;    // -inf dB
-		4'd1:  def_vol_lut = 7'd2;
-		4'd2:  def_vol_lut = 7'd3;
-		4'd3:  def_vol_lut = 7'd4;
+		4'd0:  def_vol_lut = 7'd2;
+		4'd1:  def_vol_lut = 7'd3;
+		4'd2:  def_vol_lut = 7'd4;
+		4'd3:  def_vol_lut = 7'd5;
 		4'd4:  def_vol_lut = 7'd6;
 		4'd5:  def_vol_lut = 7'd8;
-		4'd6:  def_vol_lut = 7'd11;
+		4'd6:  def_vol_lut = 7'd10;
 		4'd7:  def_vol_lut = 7'd14;
-		4'd8:  def_vol_lut = 7'd19;
-		4'd9:  def_vol_lut = 7'd25;
-		4'd10: def_vol_lut = 7'd33;
-		4'd11: def_vol_lut = 7'd44;
-		4'd12: def_vol_lut = 7'd58;
-		4'd13: def_vol_lut = 7'd75;
-		4'd14: def_vol_lut = 7'd89;
+		4'd8:  def_vol_lut = 7'd17;
+		4'd9:  def_vol_lut = 7'd22;
+		4'd10: def_vol_lut = 7'd29;
+		4'd11: def_vol_lut = 7'd37;
+		4'd12: def_vol_lut = 7'd47;
+		4'd13: def_vol_lut = 7'd61;
+		4'd14: def_vol_lut = 7'd78;
 		4'd15: def_vol_lut = 7'd100;
 	endcase
 endfunction
@@ -530,7 +549,7 @@ wire        z80b_wait_n;         // stallo su fetch ROM DDR3 pendente (assegnato
 
 // --- MSM5205 (ADPCM) ---
 reg [7:0] msm_ce_cnt;
-wire      msm_cen = (msm_ce_cnt == 8'd249);
+wire      msm_cen = (msm_ce_cnt == 8'd124);   // 48 MHz / 125 = 384 kHz
 always @(posedge clk) begin
 	if (reset) msm_ce_cnt <= 0;
 	else if (ss_restore_release) msm_ce_cnt <= 0;   // [SS-HOOK] fase deterministica post-restore
@@ -591,14 +610,14 @@ jt5205 u_msm5205 (
 	.vclk_o (msm_vclk)
 );
 
-// msm_irq (jt5205 irq = cen_lo) e' un impulso di 1 clk a 96MHz ogni 12000 clk
-// (8kHz). tv80s campiona nmi_n solo su cen (ce_4m, 1 clk su 24); T80pa lo
-// campionava a clk pieno (T80.vhd edge-detect fuori dal gate CEN) e lo
-// catturava sempre. 12000 mod 24 = 0 -> l'impulso e' phase-locked al tick
+// msm_irq (jt5205 irq = cen_lo) e' un impulso di 1 clk a 48MHz ogni 6000 clk
+// (8kHz). Lo Z80 campiona nmi_n solo sui cen (ce_4m, 1 clk su 12).
+// 6000 mod 12 = 0 -> l'impulso e' phase-locked al tick
 // ce_4m: fase fissata al reset, se sbagliata l'NMI e' persa ad ogni campione
 // (FX muti dal boot, deterministico; il restore la spostava via msm_reset).
-// Stretch: latch a clk pieno, rilasciato al primo ce_4m (il tick in cui
-// tv80s campiona). Un NMI per impulso, si pulisce da solo entro 1 tick.
+// Stretch: latch a clk pieno, rilasciato al primo ce_4m (lo Z80 campiona a ogni
+// ce_z80, ce_4m compreso: il basso resta visibile ad almeno un cen).
+// Un NMI per impulso, si pulisce da solo entro 1 tick.
 reg msm_nmi_hold;
 always @(posedge clk) begin
 	if (reset)                      msm_nmi_hold <= 1'b0;
@@ -607,28 +626,29 @@ always @(posedge clk) begin
 end
 
 wire z80b_rfsh_n;
-tv80s z80_adpcm (
-	.reset_n (~reset),
-	.clk     (clk),
-	.cen     (ce_4m),
-	.wait_n  (z80b_wait_n),
-	.int_n   (1'b1),
-	.nmi_n   (~((msm_irq & msm_nmi_en) | msm_nmi_hold)),
-	.busrq_n (1'b1),
-	.m1_n    (z80b_m1_n),
-	.mreq_n  (z80b_mreq_n),
-	.iorq_n  (z80b_iorq_n),
-	.rd_n    (z80b_rd_n),
-	.wr_n    (z80b_wr_n),
-	.rfsh_n  (z80b_rfsh_n),
-	.halt_n  (),
-	.busak_n (),
-	.A       (z80b_addr),
-	.di      (z80b_din),
-	.dout    (z80b_dout),
-	.auto_ss_in  (ss_z80b_ssin),
-	.auto_ss_out (ss_z80b_ssout),
-	.auto_ss_wr  (ss_z80b_sswr)
+rmZ80 z80_adpcm (
+	.clk      (clk),
+	.cen      (ce_z80),
+	.rst      (reset),
+	.addr     (z80b_addr),
+	.data_in  (z80b_din),
+	.data_out (z80b_dout),
+	.data_oe  (),
+	.mreq_n   (z80b_mreq_n),
+	.iorq_n   (z80b_iorq_n),
+	.rd_n     (z80b_rd_n),
+	.wr_n     (z80b_wr_n),
+	.rfsh_n   (z80b_rfsh_n),
+	.m1_n     (z80b_m1_n),
+	.halt_n   (),
+	.wait_n   (z80b_wait_n),
+	.busreq_n (1'b1),
+	.busack_n (),
+	.int_n    (1'b1),
+	.nmi_n    (~((msm_irq & msm_nmi_en) | msm_nmi_hold)),
+	.ss_load  (ss_z80b_sswr),
+	.ss_din   (ss_z80b_ssin[273:0]),
+	.ss_dout  (ss_z80b_ss_lo)
 );
 
 // --- Z80 #2 ROM read: da BRAM (latenza fissa 1 clk, nessuno stallo) ---
@@ -660,7 +680,7 @@ end
 // Audio sample rate generation (192kHz for JTFRAME filters)
 // =====================================================================
 reg [8:0] sample_cnt;
-wire sample_192k = (sample_cnt == 9'd499);  // 96MHz / 500 = 192kHz
+wire sample_192k = (sample_cnt == 9'd249);  // 48MHz / 250 = 192kHz
 always @(posedge clk) begin
 	if (reset) sample_cnt <= 9'd0;
 	else sample_cnt <= sample_192k ? 9'd0 : sample_cnt + 9'd1;
@@ -669,34 +689,36 @@ end
 // =====================================================================
 // Per-channel analog reconstruction (JTFRAME modules)
 // =====================================================================
-// DC removal for PSG (unsigned 8-bit → signed 8-bit)
-wire signed [7:0] psg1a_dc, psg1b_dc, psg1c_dc;
-wire signed [7:0] psg2a_dc, psg2b_dc, psg2c_dc;
+// DC removal for PSG (unsigned 8-bit → signed 9-bit). A 8 bit l'uscita senza continua
+// (fino a +-142 a volume pieno) ripiegava oltre 127: onda quadra asimmetrica, armoniche
+// pari a -24 dB (misurato e rifatto bit per bit, 06/11/2026). A 9 bit e' simmetrica come in MAME.
+wire signed [8:0] psg1a_dc, psg1b_dc, psg1c_dc;
+wire signed [8:0] psg2a_dc, psg2b_dc, psg2c_dc;
 
-jtframe_dcrm #(.SW(8)) u_dc_p1a(.rst(reset),.clk(clk),.sample(sample_192k),.din(ym1_psg_a),.dout(psg1a_dc));
-jtframe_dcrm #(.SW(8)) u_dc_p1b(.rst(reset),.clk(clk),.sample(sample_192k),.din(ym1_psg_b),.dout(psg1b_dc));
-jtframe_dcrm #(.SW(8)) u_dc_p1c(.rst(reset),.clk(clk),.sample(sample_192k),.din(ym1_psg_c),.dout(psg1c_dc));
-jtframe_dcrm #(.SW(8)) u_dc_p2a(.rst(reset),.clk(clk),.sample(sample_192k),.din(ym2_psg_a),.dout(psg2a_dc));
-jtframe_dcrm #(.SW(8)) u_dc_p2b(.rst(reset),.clk(clk),.sample(sample_192k),.din(ym2_psg_b),.dout(psg2b_dc));
-jtframe_dcrm #(.SW(8)) u_dc_p2c(.rst(reset),.clk(clk),.sample(sample_192k),.din(ym2_psg_c),.dout(psg2c_dc));
+jtframe_dcrm #(.SW(9)) u_dc_p1a(.rst(reset),.clk(clk),.sample(sample_192k),.din({1'b0,ym1_psg_a}),.dout(psg1a_dc));
+jtframe_dcrm #(.SW(9)) u_dc_p1b(.rst(reset),.clk(clk),.sample(sample_192k),.din({1'b0,ym1_psg_b}),.dout(psg1b_dc));
+jtframe_dcrm #(.SW(9)) u_dc_p1c(.rst(reset),.clk(clk),.sample(sample_192k),.din({1'b0,ym1_psg_c}),.dout(psg1c_dc));
+jtframe_dcrm #(.SW(9)) u_dc_p2a(.rst(reset),.clk(clk),.sample(sample_192k),.din({1'b0,ym2_psg_a}),.dout(psg2a_dc));
+jtframe_dcrm #(.SW(9)) u_dc_p2b(.rst(reset),.clk(clk),.sample(sample_192k),.din({1'b0,ym2_psg_b}),.dout(psg2b_dc));
+jtframe_dcrm #(.SW(9)) u_dc_p2c(.rst(reset),.clk(clk),.sample(sample_192k),.din({1'b0,ym2_psg_c}),.dout(psg2c_dc));
 
 // Pole filters currently bypassed: DC-removed PSG and raw FM/MSM are
 // fed directly to the mixer. May be revisited in future versions.
 wire signed [15:0] ym1_fm_f = ym1_fm;
 wire signed [15:0] ym2_fm_f = ym2_fm;
-wire signed [7:0] ym1_psg_a_f = psg1a_dc;
-wire signed [7:0] ym1_psg_b_f = psg1b_dc;
-wire signed [7:0] ym1_psg_c_f = psg1c_dc;
-wire signed [7:0] ym2_psg_a_f = psg2a_dc;
-wire signed [7:0] ym2_psg_b_f = psg2b_dc;
-wire signed [7:0] ym2_psg_c_f = psg2c_dc;
+wire signed [8:0] ym1_psg_a_f = psg1a_dc;
+wire signed [8:0] ym1_psg_b_f = psg1b_dc;
+wire signed [8:0] ym1_psg_c_f = psg1c_dc;
+wire signed [8:0] ym2_psg_a_f = psg2a_dc;
+wire signed [8:0] ym2_psg_b_f = psg2b_dc;
+wire signed [8:0] ym2_psg_c_f = psg2c_dc;
 wire signed [11:0] msm_f = msm_snd;
 
 // =====================================================================
 // Audio mixer — MAME-ratio-matched, 3-stage pipeline
 // =====================================================================
 // Coefficients scaled for jt03 integer output ranges (not MAME floats).
-// FM:PSG:MSM ratios match MAME route gains (0.60 : 0.08 : 1.00).
+// FM:PSG:MSM ratios measured against MAME's output (audio_mixer_gain.sv).
 // Division by 65536 (>>>16) instead of /10000. No post-gain ×4.
 // Pipeline: stage 1 = products, stage 2 = sum, stage 3 = >>>16 + clamp
 
@@ -728,8 +750,8 @@ always @(posedge clk) begin
 end
 
 // --- Stage 0b: coefficients (coeff × pv) — REGISTERED ---
-// Ratios FM:PSG:MSM match MAME route gains (0.60 : 0.08 : 1.00).
-// I coefficienti (154/5284/4071 di default) arrivano ora dal modulo isolato
+// Ratios FM:PSG:MSM measured against MAME's output (audio_mixer_gain.sv).
+// I coefficienti (616/5275/8226 di default) arrivano dal modulo isolato
 // audio_mixer_gain: default per canale + scaling relativo da OSD. A sel=0
 // (Default) coeff_* == valori fissi originali -> mixer BIT-IDENTICO.
 // I default vanno cambiati SOLO in audio_mixer_gain.sv (un posto).
@@ -863,7 +885,7 @@ end
 // =====================================================================
 // Adapter DDR3 (Sorgelig pattern, portato da Darius2).
 // Port 1 = Z80A ROM, Port 2 = Z80B ROM. Port 3/4 e copy port inutilizzati.
-// Stesso clock (96MHz) su tutto: nessun CDC.
+// Stesso clock (48MHz) su tutto: nessun CDC.
 // =====================================================================
 assign z80a_wait_n = (z80a_rd_req == z80a_rd_ack);
 assign z80b_wait_n = 1'b1;   // Z80#2 ROM in BRAM: sempre pronta, nessuno stallo

@@ -78,15 +78,20 @@ jt12_single_acc #(.win(14),.wout(18)) u_mono(
     .snd        ( acc_wide       )
 );
 
-// Clamp 18-bit accumulator to signed 16-bit output.
-// The wider accumulator prevents distortion during intermediate sums
-// (alg 4-7 can reach ±98292). The final clamp is clean saturation,
-// not mid-accumulation overflow which causes harsh distortion.
-// alg 0-3: peak ±24573, never clips here.
-// alg 4:   peak ±49146, clips gently at ±32767.
-// alg 7:   peak ±98292, clips but signal shape preserved up to ±32767.
-assign snd = (acc_wide > 18'sd32767)  ? 16'sd32767 :
-             (acc_wide < -18'sd32768) ? -16'sd32768 :
-             acc_wide[15:0];
+// 18-bit accumulator -> 16-bit output con SOFT-CLIP (non taglio netto).
+// acc_wide arriva a ±98292 (alg 4-7, 3 canali forti col volume dinamico
+// Darius). Il clamp DURO a ±32767 tagliava il 33-67% dei picchi = distorsione
+// (MAME non lo fa). Soft-clip: SOTTO 28000 = INTATTO (identico a prima/MAME,
+// la gran parte del segnale, alg 0-3 non toccati); SOPRA comprime dolce (>>4)
+// verso il fondo scala -> forma d'onda preservata, niente distorsione.
+// Verificato: alg7 max 98292 -> 32393 (< 32767, mai tagliato netto). Clamp
+// finale solo di sicurezza (>131071, impossibile). Solo shift, no DSP.
+// Rimozione: rimettere il clamp duro originale a ±32767.
+localparam [17:0] SC_TH = 18'd28000;
+wire signed [17:0] acc_abs_s = acc_wide[17] ? (-acc_wide) : acc_wide;
+wire        [17:0] a = acc_abs_s[17:0];
+wire        [17:0] y = (a <= SC_TH) ? a : (SC_TH + ((a - SC_TH) >> 4));
+wire        [15:0] y16 = (y > 18'd32767) ? 16'd32767 : y[15:0];
+assign snd = acc_wide[17] ? -$signed(y16) : $signed(y16);
 
 endmodule

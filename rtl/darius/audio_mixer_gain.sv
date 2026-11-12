@@ -43,26 +43,24 @@ module audio_mixer_gain (
 
 // =====================================================================
 //  DEFAULT PER CANALE — UNICO PUNTO DA MODIFICARE
-//  Valori iniziali = coefficienti MAME-ratio attuali del mixer
-//  (FM:PSG:MSM = 0.60:0.08:1.00). Alzare/abbassare qui = riferimento nuovo,
-//  tutto il resto scala di conseguenza.
+//  Alzare/abbassare qui = riferimento nuovo, tutto il resto scala di conseguenza.
 // =====================================================================
-// Default x4 vs coeff MAME originali (154/5284/4071): base forte (oltre il
-// 200% della taratura precedente). Il clamp finale (stage 3, su registri
-// larghi) fa da limiter sui picchi estremi; il worst-case reale di gioco e'
-// lontano dal worst-case teorico, quindi il percepito sale davvero. Rapporti
-// FM:PSG:MSM IDENTICI (stesso fattore x4 su tutti). Le % OSD scalano da qui.
-// Alzare/abbassare ancora = SOLO questi 9 numeri (un posto). 16-bit per
-// contenere PSG 5284*4=21136 (oltre i 14b).
+// Rapporti FM:PSG:MSM ricavati dall'uscita di MAME (06/11/2026, banco
+// MiSTer_Utility/Audio_Compare, col PSG a 9 bit e la tabella def_vol dall'uscita):
+// sui suoni dove ogni chip suona da solo (f4 FM, f8 PSG, 2a MSM), con l'FM a 616
+// (154 x4) il PSG stava 12.06 dB e l'MSM 5.93 dB sopra MAME rispetto all'FM ->
+// PSG 21136 -> 5275, MSM 16284 -> 8226. Su tutti i 47 suoni del gioco FM, PSG e MSM
+// hanno cosi' lo stesso scarto da MAME (+3.9 dB: solo volume generale).
+// Le % OSD scalano da qui. Il clamp finale (stage 3) fa da limiter sui picchi.
 localparam [15:0] DEF_FM0 = 16'd616;     // FM chip 0 (BGM)   154  x4
 localparam [15:0] DEF_FM1 = 16'd616;     // FM chip 1 (BGM)
-localparam [15:0] DEF_P0A = 16'd21136;   // SSG-A ch A        5284 x4
-localparam [15:0] DEF_P0B = 16'd21136;   // SSG-A ch B
-localparam [15:0] DEF_P0C = 16'd21136;   // SSG-A ch C
-localparam [15:0] DEF_P1A = 16'd21136;   // SSG-B ch A
-localparam [15:0] DEF_P1B = 16'd21136;   // SSG-B ch B
-localparam [15:0] DEF_P1C = 16'd21136;   // SSG-B ch C
-localparam [15:0] DEF_MSM = 16'd16284;   // MSM5205 ADPCM     4071 x4
+localparam [15:0] DEF_P0A = 16'd5275;    // SSG-A ch A
+localparam [15:0] DEF_P0B = 16'd5275;    // SSG-A ch B
+localparam [15:0] DEF_P0C = 16'd5275;    // SSG-A ch C
+localparam [15:0] DEF_P1A = 16'd5275;    // SSG-B ch A
+localparam [15:0] DEF_P1B = 16'd5275;    // SSG-B ch B
+localparam [15:0] DEF_P1C = 16'd5275;    // SSG-B ch C
+localparam [15:0] DEF_MSM = 16'd8226;    // MSM5205 ADPCM
 
 // =====================================================================
 //  MOLTIPLICATORE RELATIVO — 8.8 fixed, 100% = 256. Tabella COMPLETA a 16

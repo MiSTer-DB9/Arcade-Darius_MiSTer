@@ -1,45 +1,38 @@
-# Quartus build artifacts
+# Quartus output
 output_files/
 db/
 incremental_db/
+simulation/
+timing/
 greybox_tmp/
 hc_output/
 hps_isw_handoff/
-simulation/
-timing/
-qdb/
-
-# Quartus session / workspace
+.qsys_edit/
 *.qws
-*.qpf.swp
-*_assignment_defaults.qdf
-
-# Quartus auto-generated info
+*.rpt
+*.summary
+*.smsg
+*.done
+*.pin
+*.jdi
+*.sld
+*.qar
+*.qarlog
+*.bak
+*.orig
+*.rej
 c5_pin_model_dump.txt
-cr_ie_info.json
-serv_req_info.txt
-jt12.raw
+PLLJ_PLLSPE_INFO.txt
 
-# Signal Tap
-*.stp
-*.csv
-
-# Build logs
-build_*.log
-
-# STA scripts
-_sta_*.tcl
-_sta_*.txt
-sta_*.tcl
-
-# JTAG
+# Written by sys/build_id.tcl at every compile
+build_id.v
 jtag.cdf
 
-# Editor / OS
-*.bak
-*.tmp
-*~
+# Python
+__pycache__/
+*.pyc
+
+# OS / editor
 .DS_Store
 Thumbs.db
-.vscode/
-.idea/
+*~

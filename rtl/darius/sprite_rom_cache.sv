@@ -18,14 +18,14 @@
     Date: 2026
 
     Cache logic based on Darius2NinjaWarriors, adapted to Darius Rework:
-      - SDRAM backend via tile_rom_arbiter client r3 (pulse/valid protocol),
+      - SDRAM backend via graphics port 3 of sdrc_darius (pulse/valid protocol),
         NOT a DDR3 toggle (Darius Rework keeps the sprite ROM in SDRAM).
       - cache DOUBLED vs NinjaWarriors: 2048 sets x 2 way = 4096 entries
         (Darius sprite address space = 20 bit, addr[19:0]).
 */
 
 // sprite_rom_cache — 2-way set associative cache of the sprite ROM row-words,
-// inserted BETWEEN the renderer and the tile_rom_arbiter (client r3). The
+// inserted BETWEEN the renderer and graphics port 3 of sdrc_darius. The
 // renderer does not know it exists: it sees the same spriterom_* protocol
 // (req_pulse -> resp_valid).
 //
@@ -34,8 +34,8 @@
 //   Index = addr[12:2]  (11 bit -> 2048 sets)
 //   Tag   = addr[19:13] (7 bit)  + valid
 //
-// Backend: pulse/valid protocol identical to the arbiter's r3 client:
-//   be_req rising -> arbiter serves -> be_valid pulse 1 ck with be_data.
+// Backend: pulse/valid protocol of graphics port 3:
+//   be_req rising -> sdrc_darius serves -> be_valid pulse 1 ck with be_data.
 
 module sprite_rom_cache (
 	input  wire        clk,

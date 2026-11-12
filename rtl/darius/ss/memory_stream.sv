@@ -1,12 +1,12 @@
-/*  This file is part of BoogieWings_MiSTer.
+/*  This file is part of Darius_MiSTer.
     GPL-3.
     Original author: Martin Donlon (wickerwaka) — Arcade-TaitoF2 savestate system.
-    Modified/adapted for BoogieWings by: Umberto Parisi (rmonc79)
+    Modified/adapted by: Umberto Parisi (rmonic79)
 */
 
 //============================================================================
-//  BoogieWings Savestate — memory_stream (DMA streaming verso DDR)
-//  Portato fedele da _reference/taitof2_ss/memory_stream.sv (Martin Donlon).
+//  Savestate — memory_stream (DMA streaming verso DDR)
+//  Portato fedele da memory_stream.sv di Arcade-TaitoF2 (Martin Donlon).
 //  Hardware-agnostico: dipende solo da ddr_if. Non modificato.
 //============================================================================
 

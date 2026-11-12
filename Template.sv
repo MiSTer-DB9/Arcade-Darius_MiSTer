@@ -30,7 +30,7 @@ module emu
 (
 	input         CLK_50M,
 	input         RESET,
-	inout  [48:0] HPS_BUS,
+	inout  [45:0] HPS_BUS,
 	output        CLK_VIDEO,
 	output        CE_PIXEL,
 	output [12:0] VIDEO_ARX,
@@ -149,11 +149,11 @@ assign USER_OUT = USER_OUT_DRIVE;
 // [MiSTer-DB9 END]
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
-// DDR3: ROM audio Z80 A/B (adapter dentro darius_audio_z80, clock unico 96MHz)
+// DDR3: ROM audio Z80 A/B (adapter dentro darius_audio_z80, clock unico 48MHz)
 assign DDRAM_CLK = clk_sys;
 
 assign VGA_SL = 0;
-assign VGA_F1 = 0;
+assign VGA_F1 = video_field;   // CRT Shrink interlacciato (status[34]); 0 in ogni altro caso
 assign VGA_SCALER  = 0;
 assign VGA_DISABLE = 0;
 // Pause: toggle on rising edge of joy[12] (standard MiSTer pause bit)
@@ -309,13 +309,15 @@ localparam CONF_STR = {
 	"P1O[11],Triple CRT Wide,Off,On;",
 	"P1O[86],CRT Adjust,Off,On;",
 	"H1P1O[91:87],CRT H-Size,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
-	"H1P1O[98:92],CRT H-Position,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,+32,+33,+34,+35,+36,+37,+38,+39,+40,+41,+42,+43,+44,+45,+46,+47,+48,-48,-47,-46,-45,-44,-43,-42,-41,-40,-39,-38,-37,-36,-35,-34,-33,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"P1O[29:28],CRT Shrink,Off,1/2,1/3,1/4;",
+"P1O[34],CRT Shrink Interlace,Off,On;",
+	"H1P1O[98:92],CRT H-Position,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,+32,+33,+34,+35,+36,+37,+38,+39,+40,+41,+42,+43,+44,+45,+46,+47,+48,+49,+50,+51,+52,+53,+54,+55,+56,+57,+58,+59,+60,+61,+62,+63,-64,-63,-62,-61,-60,-59,-58,-57,-56,-55,-54,-53,-52,-51,-50,-49,-48,-47,-46,-45,-44,-43,-42,-41,-40,-39,-38,-37,-36,-35,-34,-33,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"H1P1O[103:99],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"-;",
 	"O[18],Clean Pause,Off,On;",
 	"-;",
 	"P2,Audio Mix;",
-	"P2-,Gain per canale (Default=base);",
+	"P2-,Channel gains (Default=base);",
 	"P2O[21:19],FM-A (BGM 0),Default,Mute,25%,50%,75%,125%,150%,200%;",
 	"P2O[24:22],FM-B (BGM 1),Default,Mute,25%,50%,75%,125%,150%,200%;",
 	"P2O[27:25],SSG-A ch A,Default,Mute,25%,50%,75%,125%,150%,200%;",
@@ -338,7 +340,7 @@ localparam CONF_STR = {
 	"-;",
 	"J1,Fire,Bomb,Start 1P,Start 2P,Coin;",
 	"jn,A,B,Start,Select,R;",
-	"V,v",`BUILD_DATE
+	"V,rmonic79"
 };
 
 wire forced_scandoubler;
@@ -444,11 +446,13 @@ always @(posedge clk_sys)
 
 wire clk_sys;
 wire pll_locked;
+wire clk_sdram;   // 48 MHz sfasato 10417 ps (180 gradi): clock verso la SDRAM
 pll pll
 (
 	.refclk(CLK_50M),
 	.rst(0),
 	.outclk_0(clk_sys),
+	.outclk_1(clk_sdram),
 	.locked(pll_locked)
 );
 
@@ -461,7 +465,7 @@ wire video_reset = ~pll_locked;
 
 ///////////////////////   SDRAM   ///////////////////////////////
 
-// Genesis 4-port SDRAM controller (Sorgelig + port 3 for audio)
+// 4-port SDRAM controller (sdrc_darius, rmSdram)
 // Port 0: Tile ROM + download
 // Port 1: Main CPU ROM
 // Port 2: Sub CPU ROM
@@ -474,9 +478,26 @@ wire        sd_req0, sd_req1, sd_req2, sd_req3;
 wire        sd_ack0, sd_ack1, sd_ack2, sd_ack3;
 wire [15:0] sd_dout0, sd_dout1, sd_dout2, sd_dout3;
 wire        sdram_ready;
+// GFX ROM: una porta per cliente (pannelli sinistro/centrale/destro, sprite), senza arbitro (02/11)
+wire   [3:0] gfx_req, gfx_valid;
+wire  [95:0] gfx_addr;
+wire [127:0] gfx_data;
 
-sdram sdram_ctrl
+// 03/11: clk_sys a 48 MHz. clk_sdram dalla PLL sfasato di mezzo periodo (10417 ps): SDRAM_CLK sale a meta' della
+// finestra di comandi e indirizzi (con fase 0, build del 02/11, saliva insieme a loro e la RAM leggeva comandi a caso).
+// TCKO e TSU/TH MISURATI sui piedini della build 03/11 18:14 (quartus_sta, report_datasheet, rispetto a FPGA_CLK2_50):
+// SDRAM_CLK sale 24281 (lento) / 17226 (veloce) ps -> TCKO = meno 10417 della discesa di clk; SDRAM_DQ setup
+// -5743 / -2384, hold 8036 / 3934. Cattura al mezzo periodo 5 (discesa, 52083 ps dopo il READ): margini 6,7 ns e
+// 4,2 ns; il mezzo periodo 4 dei valori stimati prima cadeva prima del dato valido. CMD_STAGE 0: a 48 la logica
+// davanti ai piedini sta in un ciclo. AGE_MAX 32: lo stesso tempo (0,67 us) dei 64 cicli a 96.
+// 02/11: UN chip, colonna 9 bit: gira su ogni scheda (32, 64, 128 MB; sulla 128 MB usa U1). tRRD, tWR, tMRD di due
+// clock (41666 ps = 2 periodi): la 32 MB puo' montare il W9825G6KH (datasheet Rev. A04: 2 tCK). INIT_REFS 8: lo
+// stesso chip vuole otto AUTO REFRESH all'accensione (Rev. A04, 7.1 p.7), gli Alliance almeno due.
+sdrc_darius #(.CLK_KHZ(48000), .TCKO_SLOW_PS(13864), .TCKO_FAST_PS(6809), .CMD_STAGE(0), .AGE_MAX(32),
+              .TSU_SLOW_PS(-5743), .TH_SLOW_PS(8036), .TSU_FAST_PS(-2384), .TH_FAST_PS(3934),
+              .N_CHIPS(1), .COL_BITS(9), .T_RRD_PS(41666), .T_WR_PS(41666), .T_MRD_PS(41666), .INIT_REFS(8)) sdram_ctrl
 (
+	.clk_ram(clk_sdram),
 	.SDRAM_DQ(SDRAM_DQ),
 	.SDRAM_A(SDRAM_A),
 	.SDRAM_DQML(SDRAM_DQML),
@@ -504,12 +525,14 @@ sdram sdram_ctrl
 	.din2(sd_din2), .dout2(sd_dout2), .req2(sd_req2), .ack2(sd_ack2),
 
 	.addr3(sd_addr3), .wrl3(sd_wrl3), .wrh3(sd_wrh3),
-	.din3(sd_din3), .dout3(sd_dout3), .req3(sd_req3), .ack3(sd_ack3)
+	.din3(sd_din3), .dout3(sd_dout3), .req3(sd_req3), .ack3(sd_ack3),
+
+	.gfx_req(gfx_req), .gfx_addr(gfx_addr), .gfx_data(gfx_data), .gfx_valid(gfx_valid)
 );
 
 ///////////////////////   BRIDGE   ///////////////////////////////
 
-// Bridge between darius game logic (level protocol) and Genesis SDRAM (toggle protocol)
+// Bridge between darius game logic (level protocol) and the SDRAM controller (toggle protocol)
 wire [23:0] game_tile_addr, game_main_addr, game_sub_addr;
 wire        game_tile_req, game_main_req, game_sub_req;
 wire        game_tile_is_sprite;
@@ -598,6 +621,10 @@ sdram_bridge bridge
 
 wire [9:0]  render_x;
 wire [8:0]  render_y;
+wire [8:0]  render_y_next;   // CRT Shrink: riga sorgente da preparare per la riga dopo (ai renderer)
+wire [8:0]  render_y_first;  // CRT Shrink interlacciato: prima riga del quadro dopo (0 senza interlacciato)
+wire        video_field;     // CRT Shrink interlacciato: campo (VGA_F1)
+wire [8:0]  render_y_nat;    // riga naturale: IRQ4 e savestate (mai compressa)
 wire [23:0] tile_rgb;
 wire [1:0]  tile_prio;
 wire        tile_opaque;
@@ -640,6 +667,7 @@ darius_dual68k_top game
 	.tilerom_req(game_tile_req),
 	.tilerom_is_sprite(game_tile_is_sprite),
 	.tilerom_is_text(game_tile_is_text),
+	.gfx_req(gfx_req), .gfx_addr(gfx_addr), .gfx_data(gfx_data), .gfx_valid(gfx_valid),
 
 	// Audio ROM download (ioctl → BRAM)
 	.ioctl_download(ioctl_download),
@@ -650,6 +678,11 @@ darius_dual68k_top game
 	// Video
 	.render_x(render_x),
 	.render_y(render_y),
+	.render_y_next(render_y_next),
+	.render_y_first(render_y_first),
+	.spr_snap(status[29:28]),   // CRT Shrink: Y degli sprite alla griglia della finestra (1/2, 1/4; 1/3 e Off niente),
+	                            // anche interlacciato: il campo pari mostra sempre le righe pari dello sprite, il dispari le dispari
+	.render_y_nat(render_y_nat),
 	.tile_rgb(tile_rgb),
 	.tile_prio(tile_prio),
 	.tile_opaque(tile_opaque),
@@ -764,6 +797,12 @@ triple_screen_test u_video (
 	.VSync(VSync),
 	.render_x(render_x),
 	.render_y(render_y),
+	.render_y_next(render_y_next),
+	.render_y_nat(render_y_nat),
+	.vshrink(status[29:28]),   // CRT Shrink: compressione verticale, zero memoria (darius_vshrink)
+	.vshrink_ilace(status[34]), // CRT Shrink interlacciato: campi alterni, il doppio delle righe sul CRT
+	.render_y_first(render_y_first),
+	.field(video_field),
 	.R(video_r),
 	.G(video_g),
 	.B(video_b)
@@ -798,7 +837,7 @@ wire [2:0] follow_view = status[10:8];
 wire follow_en = (follow_view != 3'd0);
 wire wide3_mode = (follow_view == 3'd0) && status[11];
 wire [7:0] fc_r, fc_g, fc_b;
-wire       fc_hb, fc_hs, fc_ce;
+wire       fc_hb, fc_hs, fc_ce, fc_vb;   // fc_vb: VBlank dello stream rigenerato (una riga dopo, con follow-cam/Wide)
 wire [9:0] fc_ovl_x;
 
 darius_followcam u_followcam (
@@ -823,26 +862,17 @@ darius_followcam u_followcam (
 	.HBlank_out (fc_hb),
 	.HSync_out  (fc_hs),
 	.pix_ce     (fc_ce),
+	.VBlank_out (fc_vb),
 	.ovl_x      (fc_ovl_x)
 );
 
-// Pause overlay: dim video + logo 48x48 al centro durante pausa.
-// OSD "Clean Pause" (status[18]): ON=video raw senza addon, OFF=overlay attivo.
-wire [7:0] av_r, av_g, av_b;
-pause_overlay u_pause_ovl (
-	.clk       (clk_sys),
-	.pause     (pause_req & paused_safe),  // SOLO pausa utente: il savestate
-	                                       // pausa il gioco ma non mostra overlay
-	.clean     (status[18]),
-	.render_x  (fc_ovl_x),
-	.render_y  (render_y),
-	.rgb_r_in  (fc_r),
-	.rgb_g_in  (fc_g),
-	.rgb_b_in  (fc_b),
-	.rgb_r_out (av_r),
-	.rgb_g_out (av_g),
-	.rgb_b_out (av_b)
-);
+// Pausa: immagine a meta' luminosita' (>>1), lo scurimento che faceva l'overlay; e' il solo segno visivo
+// che il gioco e' fermo. Solo pausa utente: il savestate pausa il gioco senza scurire. OSD "Clean Pause"
+// (status[18]) On = video pulito. Combinatorio puro: nessun registro sul percorso video, HS/VS invariati.
+wire dim_on = pause_req & paused_safe & ~status[18];
+wire [7:0] av_r = dim_on ? {1'b0, fc_r[7:1]} : fc_r;
+wire [7:0] av_g = dim_on ? {1'b0, fc_g[7:1]} : fc_g;
+wire [7:0] av_b = dim_on ? {1'b0, fc_b[7:1]} : fc_b;
 
 // ── CRT Adjust (H-Size + H-Position + V-Shift) — portato 1:1 da Legionnaire ──
 // Contenuto spostato/scalato nel line buffer, sync nativi -> nessun desync CRT.
@@ -855,40 +885,40 @@ reg crt_on;
 always @(posedge clk_sys) if (ce_pix) crt_on <= status[86];
 
 // H-Size (status[91:87], 5-bit two's complement): 0=nativo, +1..+15 enlarge,
-// -1..-16 shrink. Base periodo Darius = 16 quarti (4 clk @96M = 24MHz pixel):
-// clamp minimo 8 quarti (2 clk) — hsize molto negativo non puo' azzerare il periodo.
+// -1..-16 shrink. Base periodo Darius = 16 quarti (2 clk @48M = 24MHz pixel; 02/11, era 4 clk @96M):
+// clamp minimo 8 quarti (1 clk) — hsize molto negativo non puo' azzerare il periodo.
 reg signed [4:0] hsize_s;
 always @(posedge clk_sys) if (ce_pix) hsize_s <= $signed(status[91:87]);
 
-// H-Position (status[98:92], 7 bit): 0..48 = +0..+48 (destra), 79..127 = -48..-1.
+// H-Position (status[98:92], 7 bit in complemento a due): 0..63 = +0..+63 (destra), 64..127 = -64..-1.
 // Scala x4: la linea Darius e' 1527 slot (vs 384 Legionnaire) — senza scala
-// ogni passo muove ~1/4 del dovuto. x4 -> ±192 slot = ±12.6% linea, passo 0.26%.
+// ogni passo muove ~1/4 del dovuto. x4 -> -256..+252 pixel nativi di schermo, passo 0.26% della linea.
+// 06/11: da -48..+48 a -64..+63 (l'immagine nativa sta a destra); i valori -48..+48 restano gli stessi. Con il
+// CRT Adjust che compensa H-Size (centro fermo), H-Position e' in pixel di schermo qualunque sia H-Size.
 reg [6:0] hpos_d;
 always @(posedge clk_sys) if (ce_pix) hpos_d <= status[98:92];
-wire signed [8:0] hpos_off = ((hpos_d <= 7'd48)
-	? $signed({2'b0, hpos_d})
-	: $signed({2'b0, hpos_d}) - 9'sd128) <<< 2;
+wire signed [10:0] hpos_off = {{2{hpos_d[6]}}, hpos_d, 2'b00};
 
 // V-Shift (status[103:99], signed 5-bit -16..+15 righe).
 reg signed [5:0] vshift_off;
 always @(posedge clk_sys) if (ce_pix) vshift_off <= $signed(status[103:99]);
 
-// Read rate a QUARTI di ciclo, accumulatore. Periodo = 16+hsize quarti
-// (nativo 16 = 4 clk), reset sul RISE di hs_ref (pattern Legionnaire).
+// Read rate a QUARTI di pixel, accumulatore: +8 quarti per clk a 48 MHz. Periodo = 16+hsize quarti
+// (nativo 16 = 2 clk), reset sul RISE di hs_ref (pattern Legionnaire).
 wire hs_ref;
 reg  hs_ref_d;
 always @(posedge clk_sys) hs_ref_d <= hs_ref;
 wire hs_ref_rise = hs_ref & ~hs_ref_d;
-// Base periodo: 16 quarti (4 clk, 24MHz) — 24 quarti (6 clk, 16MHz) in Triple Wide
+// Base periodo: 16 quarti (2 clk, 24MHz) — 24 quarti (3 clk, 16MHz) in Triple Wide
 wire [7:0] rd_base = wide3_mode ? 8'd24 : 8'd16;
 wire [7:0] rd_period_raw = rd_base + {{3{hsize_s[4]}}, hsize_s};
 wire [7:0] rd_period = (rd_period_raw < 8'd8) ? 8'd8 : rd_period_raw;
 reg  [7:0] rd_acc;
-wire rd_tick = (rd_acc + 8'd4) >= {1'b0, rd_period};
+wire rd_tick = (rd_acc + 8'd8) >= {1'b0, rd_period};
 always @(posedge clk_sys) begin
 	if      (hs_ref_rise) rd_acc <= 8'd0;
-	else if (rd_tick)     rd_acc <= rd_acc + 8'd4 - {1'b0, rd_period};
-	else                  rd_acc <= rd_acc + 8'd4;
+	else if (rd_tick)     rd_acc <= rd_acc + 8'd8 - {1'b0, rd_period};
+	else                  rd_acc <= rd_acc + 8'd8;
 end
 wire rd_ce = crt_on ? rd_tick : fc_ce;
 
@@ -907,38 +937,25 @@ crt_adjust #(
 	.active   (crt_on),
 	.hsize    (hsize_s),
 	.hoffset  (hpos_off),
+	.hbase    (rd_base),             // base del ritmo di lettura: H-Size compensato (centro fermo)
 	.voffset  (vshift_off),
 	.r_in     (av_r), .g_in (av_g), .b_in (av_b),
 	.hs_in    (fc_hs),           // HSync nativo del modo corrente -> no desync
 	.vs_in    (vs_q),
-	.hb_in    (fc_hb | vbl_q),
-	.vb_in    (vbl_q),
+	.hb_in    (fc_hb | fc_vb),               // blank dello stream rigenerato
+	.vb_in    (fc_vb),
 	.r_out    (str_r), .g_out (str_g), .b_out (str_b),
 	.hs_out   (str_hs), .vs_out (str_vs),
 	.hb_out   (str_hb), .vb_out (str_vb),
 	.hs_ref_out (hs_ref)
 );
 
-// Finestra DE per l'OSD: apre all'attivo nativo (VBlank ritardato 1 riga),
-// chiude a larghezza stretchata piena (pattern Legionnaire/Blood Bros).
-reg vblank_1l;
-reg fc_hb_d;
-always @(posedge clk_sys) if (ce_pix) fc_hb_d <= fc_hb;
-wire line_tick = ce_pix && (fc_hb & ~fc_hb_d);
-always @(posedge clk_sys) if (line_tick) vblank_1l <= vbl_q;
-wire native_active = ~(fc_hb | vblank_1l);
-reg  native_active_d;
-always @(posedge clk_sys) if (ce_pix) native_active_d <= native_active;
-wire native_rise = native_active & ~native_active_d;
+// Finestra DE con il CRT Adjust acceso: la finestra del modulo (~hb_out), che segue l'immagine spostata e allargata e
+// spegne le righe di VBlank allineate alla riga che il modulo legge (come la DE dopo crt_adjust_sys nei core nuovi).
+// 06/11: prima la DE si apriva all'attivo NATIVO (schema Legionnaire/Blood Bros): con H-Position verso sinistra, o con
+// H-Size negativo, la parte d'immagine prima dell'attivo nativo usciva a DE chiusa e il framework la metteva a nero
+// (l'immagine "andava dietro al nero" invece di spostarsi).
 wire str_active = ~str_hb;
-reg  str_active_d;
-always @(posedge clk_sys) if (rd_ce) str_active_d <= str_active;
-wire str_fall = str_active_d & ~str_active;
-reg de_osd;
-always @(posedge clk_sys) begin
-	if      (native_rise) de_osd <= 1'b1;
-	else if (str_fall)    de_osd <= 1'b0;
-end
 
 // Output: ON -> dal modulo; OFF -> nativo.
 assign VGA_R = crt_on ? str_r : av_r;
@@ -963,7 +980,7 @@ video_freak video_freak
 	.VGA_DE(VGA_DE),
 	.VIDEO_ARX(VIDEO_ARX),
 	.VIDEO_ARY(VIDEO_ARY),
-	.VGA_DE_IN(crt_on ? de_osd : ~(fc_hb | vbl_q)),
+	.VGA_DE_IN(crt_on ? str_active : ~(fc_hb | fc_vb)),
 	.ARX(arx),
 	.ARY(ary),
 	.CROP_SIZE(12'd0),

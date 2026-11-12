@@ -79,7 +79,11 @@ module darius_dual68k_top
 	input  wire [15:0] sub_rom_rdata,
 	input  wire        sub_rom_ready,
 	input  wire [9:0]  render_x,
-	input  wire [8:0]  render_y,
+	input  wire [8:0]  render_y,        // riga sorgente mostrata (compressa con CRT Shrink): ai renderer
+	input  wire [8:0]  render_y_next,   // riga sorgente da preparare per la riga dopo: ai renderer
+	input  wire [8:0]  render_y_first,  // prima riga del quadro dopo (CRT Shrink interlacciato; altrimenti 0): ai renderer
+	input  wire [1:0]  spr_snap,        // CRT Shrink: Y degli sprite alla griglia della finestra (status[29:28]; 0 niente)
+	input  wire [8:0]  render_y_nat,    // riga NATURALE: IRQ4 e savestate, mai compressa
 	input  wire [31:0] tilerom_data,
 	input  wire        tilerom_valid,
 	output wire [23:0] main_rom_addr,
@@ -90,6 +94,12 @@ module darius_dual68k_top
 	output wire        tilerom_req,
 	output wire        tilerom_is_sprite,
 	output wire        tilerom_is_text,
+	// GFX ROM, una porta per cliente verso sdrc_darius:
+	// 0 = pannello sinistro, 1 = centrale, 2 = destro, 3 = sprite. req a livello, valid impulso col dato.
+	output wire  [3:0] gfx_req,
+	output wire [95:0] gfx_addr,
+	input  wire [127:0] gfx_data,
+	input  wire  [3:0] gfx_valid,
 	// Audio ROM download (ioctl → BRAM inside audio module)
 	input  wire        ioctl_download,
 	input  wire        ioctl_wr,
@@ -259,14 +269,14 @@ wire        pc060_snd_reset;
 
 // vblank a livello top (per il gate del save: iniettare IRQ7 solo a fine
 // vblank, quando la VBL-ISR del gioco ha gia' ricompilato la lista sprite).
-wire vblank_area_top = (render_y >= 9'd224);
+wire vblank_area_top = (render_y_nat >= 9'd224);
 
 // --- VBlank IRQ4 generation (cpp: set_vblank_int irq4_line_hold, both CPUs) ---
 
 generate if (ENABLE_VBLANK_IRQ) begin : gen_vblank_irq
-	// 60Hz VBlank from render_y: assert when render_y enters vblank region
-	// V_ACTIVE=224, vblank starts at vc >= 224 (render_y = screen_y)
-	wire vblank_area = (render_y >= 9'd224);
+	// 60Hz VBlank from render_y_nat: assert when the natural line enters vblank region
+	// V_ACTIVE=224, vblank starts at vc >= 224 (render_y_nat = vc, never compressed by CRT Shrink)
+	wire vblank_area = (render_y_nat >= 9'd224);
 	reg  vblank_prev;
 	reg  main_irq4_pending;
 	reg  sub_irq4_pending;
@@ -283,9 +293,11 @@ generate if (ENABLE_VBLANK_IRQ) begin : gen_vblank_irq
 				main_irq4_pending <= 1'b1;
 				sub_irq4_pending  <= 1'b1;
 			end
-			// Clear on IACK
-			if (main_iack) main_irq4_pending <= 1'b0;
-			if (sub_iack)  sub_irq4_pending  <= 1'b0;
+			// Clear on the acknowledge of level 4 only (A3:A1 = 100 in the IACK cycle): the level-7 acknowledge of the external
+			// savestate must not consume the request. With 4 and 7 the only levels present, A2 = 0 identifies level 4:
+			// one input more on each flag (five), still one LUT.
+			if (main_iack && !main_bus_addr[2]) main_irq4_pending <= 1'b0;
+			if (sub_iack  && !sub_bus_addr[2])  sub_irq4_pending  <= 1'b0;
 		end
 	end
 
@@ -367,37 +379,38 @@ auto_save_adaptor #(.N_BITS(46), .SS_IDX(SS_IDX_PC060)) u_ss_pc060 (
 	.bits_in(pc060_ss_out), .bits_out(pc060_ss_in), .bits_wr(pc060_ss_ld)
 );
 
-// Main CPU clock divider (96MHz / den)
+// Main CPU clock divider (48MHz / den; 02/11: clk_sys 96 -> 48)
 reg [7:0] main_clk_den;
 always @(*) case (clk_sel)
-	3'd0: main_clk_den = 8'd12;  // 96/12 = 8MHz (original, default)
-	3'd1: main_clk_den = 8'd8;   // 96/8  = 12MHz
-	3'd2: main_clk_den = 8'd6;   // 96/6  = 16MHz
-	3'd3: main_clk_den = 8'd4;   // 96/4  = 24MHz
-	3'd4: main_clk_den = 8'd3;   // 96/3  = 32MHz
-	3'd5: main_clk_den = 8'd2;   // 96/2  = 48MHz
-	default: main_clk_den = 8'd12;
+	3'd0: main_clk_den = 8'd6;   // 48/6  = 8MHz (original, default)
+	3'd1: main_clk_den = 8'd4;   // 48/4  = 12MHz
+	3'd2: main_clk_den = 8'd3;   // 48/3  = 16MHz
+	3'd3: main_clk_den = 8'd2;   // 48/2  = 24MHz
+	3'd4: main_clk_den = 8'd2;   // 32MHz non ottenibile da 48 (servirebbe /1,5): 24MHz
+	3'd5: main_clk_den = 8'd2;   // 48MHz non ottenibile (servirebbe /1): 24MHz
+	default: main_clk_den = 8'd6;
 endcase
 
-// Sub CPU clock divider (96MHz / den)
+// Sub CPU clock divider (48MHz / den; 02/11: clk_sys 96 -> 48)
 reg [7:0] sub_clk_den;
 always @(*) case (sub_clk_sel)
-	3'd0: sub_clk_den = 8'd12;  // 96/12 = 8MHz (original, default)
-	3'd1: sub_clk_den = 8'd8;   // 96/8  = 12MHz
-	3'd2: sub_clk_den = 8'd6;   // 96/6  = 16MHz
-	3'd3: sub_clk_den = 8'd4;   // 96/4  = 24MHz
-	3'd4: sub_clk_den = 8'd3;   // 96/3  = 32MHz
-	3'd5: sub_clk_den = 8'd2;   // 96/2  = 48MHz
-	default: sub_clk_den = 8'd12;
+	3'd0: sub_clk_den = 8'd6;   // 48/6  = 8MHz (original, default)
+	3'd1: sub_clk_den = 8'd4;   // 48/4  = 12MHz
+	3'd2: sub_clk_den = 8'd3;   // 48/3  = 16MHz
+	3'd3: sub_clk_den = 8'd2;   // 48/2  = 24MHz
+	3'd4: sub_clk_den = 8'd2;   // 32MHz non ottenibile da 48 (servirebbe /1,5): 24MHz
+	3'd5: sub_clk_den = 8'd2;   // 48MHz non ottenibile (servirebbe /1): 24MHz
+	default: sub_clk_den = 8'd6;
 endcase
 
-// Savestate: iniezioni CPU (pattern BoogieWings ss_m68k, 1:1):
-//   din override (handler/vettori), IPL7 forzato, reset restore,
-//   halt rilasciato mentre la CPU esegue il mini-handler (ss_cpu_exec).
-wire        ss_m_din_en, ss_s_din_en;
-wire [15:0] ss_m_din_data, ss_s_din_data;
-wire        ss_irq68, ss_reset68, ss_pause68, ss_cpu_exec68;
+// Savestate dei 68000: m68k_ss_seq (piu' sotto) sostituisce il dato e l'IPL delle due CPU e ne comanda pausa e
+// reset; qui i function code che gli servono.
 wire [2:0]  main_fc, sub_fc;
+// (SS7) savestate esterno dei due 68000 verso i nodi: comandi da flop; mux del dato e dell'IPL qui, nella forma del
+// savestate del gioco (halt_n = ~(pausa & ~exec), IPL 7 / nascosto / sistema, dato sostituito / mappa)
+wire        ss68_m_exec, ss68_s_exec, ss68_m_ovr, ss68_s_ovr, ss68_m_ssp, ss68_s_ssp;
+wire        ss68_m_i7, ss68_s_i7, ss68_m_hide, ss68_s_hide, ss68_m_srst, ss68_s_srst;
+wire [15:0] ss68_word, ss68_sec_word;
 
 darius_cpu_node #(
 	.CPU_ID(1'b0),
@@ -405,12 +418,12 @@ darius_cpu_node #(
 ) u_main_cpu (
 	.clk(clk),
 	.reset(reset),
-	.soft_reset(ss_reset68),
-	.halt_n(~(pause & ~ss_cpu_exec68)),
+	.soft_reset(ss68_m_srst),
+	.halt_n(~(pause & ~ss68_m_exec)),
 	.clk_num(7'd1),
 	.clk_den(main_clk_den),
-	.ipl_n(ss_irq68 ? 3'b000 : main_ipl_n),
-	.bus_din(ss_m_din_en ? ss_m_din_data : main_bus_rdata),
+	.ipl_n(ss68_m_i7 ? 3'b000 : (ss68_m_hide ? 3'b111 : main_ipl_n)),
+	.bus_din(ss68_m_ovr ? (ss68_m_ssp ? ss68_sec_word : ss68_word) : main_bus_rdata),
 	.bus_cs(main_bus_cs),
 	.bus_busy(main_bus_busy),
 	.dev_br(1'b0),
@@ -424,7 +437,18 @@ darius_cpu_node #(
 	.dbg_dtackn(),
 	.dbg_fave(),
 	.dbg_fworst(),
-	.iack(main_iack)
+	.iack(main_iack),
+	.bus_rw_raw(),
+	.ss_cen_raw(),
+	.ss_cenb_raw(),
+	.ss_cen_g(1'b0),
+	.ss_cenb_g(1'b0),
+	.ss_gate_q(1'b0),
+	.ss_gate_raw(1'b0),
+	.ss_ovr(1'b0),
+	.ss_word(16'd0),
+	.ss_ovr_c(1'b0),
+	.ss_word_c(16'd0)
 );
 
 darius_cpu_node #(
@@ -433,12 +457,12 @@ darius_cpu_node #(
 ) u_sub_cpu (
 	.clk(clk),
 	.reset(reset),
-	.soft_reset((HOLD_SUB_IN_RESET ? 1'b1 : ~cpua_ctrl_reg[0]) | ss_reset68),
-	.halt_n(~(pause & ~ss_cpu_exec68)),
+	.soft_reset((HOLD_SUB_IN_RESET ? 1'b1 : ~cpua_ctrl_reg[0]) | ss68_s_srst),
+	.halt_n(~(pause & ~ss68_s_exec)),
 	.clk_num(7'd1),
 	.clk_den(sub_clk_den),
-	.ipl_n(ss_irq68 ? 3'b000 : sub_ipl_n),
-	.bus_din(ss_s_din_en ? ss_s_din_data : sub_bus_rdata),
+	.ipl_n(ss68_s_i7 ? 3'b000 : (ss68_s_hide ? 3'b111 : sub_ipl_n)),
+	.bus_din(ss68_s_ovr ? (ss68_s_ssp ? ss68_sec_word : ss68_word) : sub_bus_rdata),
 	.bus_cs(sub_bus_cs),
 	.bus_busy(sub_bus_busy),
 	.dev_br(1'b0),
@@ -452,7 +476,18 @@ darius_cpu_node #(
 	.dbg_dtackn(),
 	.dbg_fave(),
 	.dbg_fworst(),
-	.iack(sub_iack)
+	.iack(sub_iack),
+	.bus_rw_raw(),
+	.ss_cen_raw(),
+	.ss_cenb_raw(),
+	.ss_cen_g(1'b0),
+	.ss_cenb_g(1'b0),
+	.ss_gate_q(1'b0),
+	.ss_gate_raw(1'b0),
+	.ss_ovr(1'b0),
+	.ss_word(16'd0),
+	.ss_ovr_c(1'b0),
+	.ss_word_c(16'd0)
 );
 
 darius_maincpu_map #(
@@ -615,7 +650,7 @@ darius_subcpu_map #(
 // Adaptor interposti sulla porta SUB delle RAM dual-port (CPU ferme durante
 // gather/scatter) e sull'unica porta delle RAM locali.
 // =====================================================================
-localparam SS_IDX_GLOBAL   = 0;   // 2x SSP (darius_ss_m68k2)
+localparam SS_IDX_GLOBAL   = 0;   // sezione del savestate dei 68000 (m68k_ss_seq: 4 parole)
 localparam SS_IDX_MAIN_RAM = 1;
 localparam SS_IDX_SUB_RAM  = 2;
 localparam SS_IDX_SHARED   = 3;
@@ -636,8 +671,8 @@ localparam SS_IDX_ZRAM     = 17;  // audio Fase A: RAM Z80A 4KB (hook esterno)
 localparam SS_IDX_AMISC    = 18;  // audio Fase A: bank/cmd/pan/msm (hook esterno)
 localparam SS_IDX_YMSH1    = 19;  // audio Fase B: shadow registri YM1
 localparam SS_IDX_YMSH2    = 20;  // audio Fase B: shadow registri YM2
-localparam SS_IDX_Z80A     = 21;  // audio Fase C: tv80s Z80A registri (auto_ss 358)
-localparam SS_IDX_Z80B     = 22;  // audio Fase C: tv80s Z80B registri (auto_ss 358)
+localparam SS_IDX_Z80A     = 21;  // audio Fase C: stato rmZ80 Z80A (274 bit nei bassi di 358)
+localparam SS_IDX_Z80B     = 22;  // audio Fase C: stato rmZ80 Z80B (274 bit nei bassi di 358)
 localparam SS_IDX_PC060    = 23;  // audio: handshake PC060HA (46 bit)
 localparam SS_NSLAVES      = 24;
 localparam SS_MS_COUNT     = 32;  // potenza di 2 >= NSLAVES (regola BW)
@@ -947,7 +982,7 @@ darius_local_ram #(
 );
 
 // =====================================================================
-// 3 parallel panel renderers + tile ROM arbiter
+// 3 parallel panel renderers (tile ROM: one sdrc_darius port each)
 // =====================================================================
 
 // =====================================================================
@@ -1028,7 +1063,7 @@ darius_panel_renderer #(.X_OFFSET(10'd0), .H_PIXELS(10'd288), .SS_IDX(SS_IDX_PAL
 	.ss_regs_ld(ss_regs_ld),
 	.ss_xs0(ss_xs0), .ss_xs1(ss_xs1), .ss_ys0(ss_ys0), .ss_ys1(ss_ys1), .ss_c0(ss_c0), .ss_c1(ss_c1),
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first),
 	.cpu_bus_addr(main_bus_addr), .cpu_bus_asn(main_bus_asn),
 	.cpu_bus_rnw(main_bus_rnw), .cpu_bus_dsn(main_bus_dsn),
 	.cpu_bus_wdata(main_bus_dout), .cpu_bus_cs(main_bus_cs),
@@ -1052,7 +1087,7 @@ darius_panel_renderer #(.X_OFFSET(10'd288), .H_PIXELS(10'd288), .SS_IDX(SS_IDX_P
 	.ss_regs_ld(ss_regs_ld),
 	.ss_xs0(ss_xs0), .ss_xs1(ss_xs1), .ss_ys0(ss_ys0), .ss_ys1(ss_ys1), .ss_c0(ss_c0), .ss_c1(ss_c1),
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first),
 	.cpu_bus_addr(main_bus_addr), .cpu_bus_asn(main_bus_asn),
 	.cpu_bus_rnw(main_bus_rnw), .cpu_bus_dsn(main_bus_dsn),
 	.cpu_bus_wdata(main_bus_dout), .cpu_bus_cs(main_bus_cs),
@@ -1075,7 +1110,7 @@ darius_panel_renderer #(.X_OFFSET(10'd576), .H_PIXELS(10'd288), .SS_IDX(SS_IDX_P
 	.ss_regs_ld(ss_regs_ld),
 	.ss_xs0(ss_xs0), .ss_xs1(ss_xs1), .ss_ys0(ss_ys0), .ss_ys1(ss_ys1), .ss_c0(ss_c0), .ss_c1(ss_c1),
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first),
 	.cpu_bus_addr(main_bus_addr), .cpu_bus_asn(main_bus_asn),
 	.cpu_bus_rnw(main_bus_rnw), .cpu_bus_dsn(main_bus_dsn),
 	.cpu_bus_wdata(main_bus_dout), .cpu_bus_cs(main_bus_cs),
@@ -1097,7 +1132,7 @@ wire [23:0] sprite_romaddr;
 wire        sprite_romreq;
 wire [31:0] sprite_romdata;
 wire        sprite_romvalid;
-// Sprite ROM interface (lato BACKEND: cache <-> arbiter client r3)
+// Sprite ROM interface (lato BACKEND: cache <-> porta grafica 3 di sdrc_darius)
 // La sprite_rom_cache si interpone: gli sprite che riusano lo stesso tile/row
 // (oggetti grandi, ripetizioni, animazioni) fanno HIT in 1 ck senza toccare la
 // SDRAM -> niente contesa/annegamento coi tile in frame densi.
@@ -1162,7 +1197,7 @@ end
 
 darius_fg_renderer u_fg_renderer (
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first),
 	.fg_ram_addr(fg_render_addr),
 	.fg_ram_rdata(fg_render_rdata),
 	.fg_stall(fg_render_stall),
@@ -1172,25 +1207,20 @@ darius_fg_renderer u_fg_renderer (
 	.fg_rgb(fg_rgb), .fg_opaque(fg_opaque)
 );
 
-// GFX ROM arbiter: 3 tile + 1 sprite + 1 FG text -> 1 bridge Port0
-tile_rom_arbiter u_tile_arb (
-	.clk(clk), .reset(reset),
-	.hblank(render_x >= 10'd864),
-	.r0_req(r0_tilerom_req), .r0_addr(r0_tilerom_addr),
-	.r0_data(r0_tilerom_data), .r0_valid(r0_tilerom_valid),
-	.r1_req(r1_tilerom_req), .r1_addr(r1_tilerom_addr),
-	.r1_data(r1_tilerom_data), .r1_valid(r1_tilerom_valid),
-	.r2_req(r2_tilerom_req), .r2_addr(r2_tilerom_addr),
-	.r2_data(r2_tilerom_data), .r2_valid(r2_tilerom_valid),
-	.r3_req(spr_be_req), .r3_addr(spr_be_addr),
-	.r3_data(spr_be_data), .r3_valid(spr_be_valid),
-	.r4_req(1'b0), .r4_addr(24'd0),
-	.r4_data(), .r4_valid(),
-	.tile_req(tilerom_req), .tile_addr(tilerom_addr),
-	.tile_is_sprite(tilerom_is_sprite),
-	.tile_is_text(tilerom_is_text),
-	.tile_data(tilerom_data), .tile_valid(tilerom_valid)
-);
+// GFX ROM: ogni cliente ha la sua porta in sdrc_darius
+// (req a livello + indirizzo in byte; valid impulso di un ciclo col dato a 32 bit),
+// cosi' le letture dei tre pannelli e degli sprite sono in volo insieme. La porta tile del bridge resta ferma.
+assign gfx_req  = {spr_be_req,  r2_tilerom_req,  r1_tilerom_req,  r0_tilerom_req};
+assign gfx_addr = {spr_be_addr, r2_tilerom_addr, r1_tilerom_addr, r0_tilerom_addr};
+assign r0_tilerom_data  = gfx_data[ 31: 0];  assign r0_tilerom_valid = gfx_valid[0];
+assign r1_tilerom_data  = gfx_data[ 63:32];  assign r1_tilerom_valid = gfx_valid[1];
+assign r2_tilerom_data  = gfx_data[ 95:64];  assign r2_tilerom_valid = gfx_valid[2];
+assign spr_be_data      = gfx_data[127:96];  assign spr_be_valid     = gfx_valid[3];
+assign tilerom_req       = 1'b0;
+assign tilerom_addr      = 24'd0;
+assign tilerom_is_sprite = 1'b0;
+assign tilerom_is_text   = 1'b0;
+wire [32:0] unused_tilerom = {tilerom_data, tilerom_valid};
 
 // Output mux: select panel based on render_x
 assign tile_rgb    = (render_x < 10'd288) ? r0_rgb :
@@ -1254,7 +1284,7 @@ end
 darius_sprite_renderer #(.SS_IDX(SS_IDX_SPR_LOC)) u_sprite (
 	.ssbus(ssb[SS_IDX_SPR_LOC]),
 	.clk(clk), .reset(reset),
-	.render_x(render_x), .render_y(render_y),
+	.render_x(render_x), .render_y(render_y), .render_y_next(render_y_next), .render_y_first(render_y_first), .render_y_nat(render_y_nat), .snap_mode(spr_snap),
 	.x_offset(10'd0),  // wide-screen: sprites use raw sx, no panel offset needed
 	.cpu_bus_addr(main_bus_addr), .cpu_bus_asn(main_bus_asn),
 	.cpu_bus_rnw(main_bus_rnw), .cpu_bus_dsn(main_bus_dsn),
@@ -1271,8 +1301,8 @@ darius_sprite_renderer #(.SS_IDX(SS_IDX_SPR_LOC)) u_sprite (
 	.ship_x(ship_x), .ship_commit(ship_commit)
 );
 
-// Cache ROM sprite interposta (renderer <-> cache <-> arbiter r3). Port di Darius2
-// (stesso HW), backend adattato a SDRAM/arbiter (pulse/valid) e cache RADDOPPIATA.
+// Cache ROM sprite interposta (renderer <-> cache <-> porta grafica 3). Port di Darius2
+// (stesso HW), backend adattato alla porta SDRAM (pulse/valid) e cache RADDOPPIATA.
 sprite_rom_cache u_spr_cache (
 	.clk(clk), .reset(reset),
 	.req_addr(sprite_romaddr), .req_pulse(sprite_romreq),
@@ -1345,7 +1375,7 @@ darius_audio_z80 u_audio (
 	.ss_ymrp_a0(ss_ymrp_a0), .ss_ymrp_data(ss_ymrp_data),
 	.ss_ymrp_wr(ss_ymrp_wr),
 	.ss_ce_ym(ss_ce_ym),   // [FIX ottava] verso il replay
-	// [SS-HOOK] Fase C: tv80s auto_ss (2x 358 bit)
+	// [SS-HOOK] Fase C: stato rmZ80 (2x 274 bit nelle sezioni da 358)
 	.ss_z80a_ssin(z80a_ss_in), .ss_z80a_ssout(z80a_ss_out), .ss_z80a_sswr(z80a_ss_wr),
 	.ss_z80b_ssin(z80b_ss_in), .ss_z80b_ssout(z80b_ss_out), .ss_z80b_sswr(z80b_ss_wr),
 	.mix_sel_fm0(mix_sel_fm0), .mix_sel_fm1(mix_sel_fm1),
@@ -1383,10 +1413,10 @@ auto_save_adaptor #(.N_BITS(56), .SS_IDX(SS_IDX_AMISC)) u_ss_amisc (
 	.bits_wr(ss_amisc_ld)
 );
 
-// --- Audio Fase C: registri Z80A/Z80B via tv80s instrumentato (auto_ss) ---
-// auto_save_adaptor (load a blocco unico su bits_wr=sentinella) — VERBATIM F2
-// (F2.sv:1289: il tv80s carica TUTTI i 358 bit ad ogni auto_ss_wr, vuole il
-// blocco unico, NON il lean-RMW che serve a jt51). Trasparente a sswr=0.
+// --- Audio Fase C: stato delle due rmZ80 (savestate parallelo, rmZ80 docs/07 §4) ---
+// auto_save_adaptor (load a blocco unico su bits_wr=sentinella): rmZ80 carica tutto
+// lo stato in un clock con ss_load = bits_wr, a CPU ferme. La sezione resta da 358 bit:
+// rmZ80 ne usa i 274 bassi, gli 84 alti escono a 0. Trasparente a sswr=0.
 auto_save_adaptor #(.N_BITS(358), .SS_IDX(SS_IDX_Z80A)) u_ss_z80a (
 	.clk(clk), .ssbus(ssb[SS_IDX_Z80A]),
 	.bits_in(z80a_ss_out), .bits_out(z80a_ss_in), .bits_wr(z80a_ss_wr)
@@ -1396,6 +1426,10 @@ auto_save_adaptor #(.N_BITS(358), .SS_IDX(SS_IDX_Z80B)) u_ss_z80b (
 	.bits_in(z80b_ss_out), .bits_out(z80b_ss_in), .bits_wr(z80b_ss_wr)
 );
 
+// (SS7y) livello "stream di caricamento in corso" per ss_ym_shadow: dall'avvio del caricamento alla fine dello stream
+reg  ss_ld_lvl = 1'b0, ss_busy_d = 1'b0;
+// (SS7p) gli impulsi di avvio dello stream escono da un flop che ha come soli utenti save_state_data e ss_ym_shadow
+reg  ss_do_save_q = 1'b0, ss_do_load_q = 1'b0;
 // --- Audio Fase B: shadow registri YM + replay al restore (chip vanilla) ---
 ss_ym_shadow #(.SS_IDX_SH1(SS_IDX_YMSH1), .SS_IDX_SH2(SS_IDX_YMSH2)) u_ss_ymsh (
 	.clk(clk),
@@ -1403,7 +1437,7 @@ ss_ym_shadow #(.SS_IDX_SH1(SS_IDX_YMSH1), .SS_IDX_SH2(SS_IDX_YMSH2)) u_ss_ymsh (
 	.ce_ym(ss_ce_ym),   // [FIX ottava] limita ogni write del replay a 1 ce
 	.ym1_wr(ss_ym1_wr), .ym2_wr(ss_ym2_wr),
 	.a0(ss_ym_a0), .wdata(ss_ym_wdata),
-	.ss_mem_read(ss_do_load),
+	.ss_mem_read(ss_ld_lvl),
 	.replay_busy(ss_ym_replay_busy),
 	.rp_active(ss_ymrp_active),
 	.rp_cs1(ss_ymrp_cs1), .rp_cs2(ss_ymrp_cs2),
@@ -1426,55 +1460,50 @@ auto_save_adaptor #(.N_BITS(104), .SS_IDX(SS_IDX_CTRL)) u_ss_ctrl (
 	.bits_wr(ss_regs_ld)
 );
 
-// --- ce lento per il reset counter di ss_m68k2 (/12 = 8MHz) ---
-reg [3:0] ss_ce_div;
-wire ss_ce_cpu = (ss_ce_div == 4'd11);
-always @(posedge clk) ss_ce_div <= ss_ce_cpu ? 4'd0 : ss_ce_div + 4'd1;
-
-// --- SS-68000 x2: mini-handler su main + sub ---
+// --- savestate dei due 68000 ---
 wire ss_do_save, ss_do_load;
+always @(posedge clk) begin   // (SS7p) registro di passaggio verso il framework
+	if (reset) begin ss_do_save_q <= 1'b0; ss_do_load_q <= 1'b0; end
+	else begin ss_do_save_q <= ss_do_save; ss_do_load_q <= ss_do_load; end
+end
 wire ss_busy;
-wire ss_slot_empty;   // [FIX slot vuoto] da u_save_state a u_ss_m68k2
-wire [3:0] ss_state_dbg;
+always @(posedge clk) begin   // (SS7y) caricamento in corso: sale con l'avvio, scende alla fine dello stream
+	if (reset) begin ss_ld_lvl <= 1'b0; ss_busy_d <= 1'b0; end
+	else begin
+		ss_busy_d <= ss_busy;
+		if (ss_do_load) ss_ld_lvl <= 1'b1;
+		else if (ss_busy_d && !ss_busy) ss_ld_lvl <= 1'b0;
+	end
+end
+wire ss_slot_empty;   // [FIX slot vuoto] da u_save_state a u_ss68k
 
-darius_ss_m68k2 #(.SS_GLOB_IDX(SS_IDX_GLOBAL)) u_ss_m68k2 (
-	.clk          (clk),
-	.ce_cpu       (ss_ce_cpu),
-	.m_word_addr  (main_bus_addr),
-	.m_ds_n       (main_bus_dsn),
-	.m_rw         (main_bus_rnw),
-	.m_fc         (main_fc),
-	.m_iack_n     (~main_iack),
-	.m_data_out   (main_bus_dout),
-	.s_word_addr  (sub_bus_addr),
-	.s_ds_n       (sub_bus_dsn),
-	.s_rw         (sub_bus_rnw),
-	.s_fc         (sub_fc),
-	.s_iack_n     (~sub_iack),
-	.s_data_out   (sub_bus_dout),
-	.do_save      (ss_save),
-	.do_restore   (ss_load),
-	.paused_real  (paused_real),
-	.vblank_area  (vblank_area_top),
-	.ext_save_ready(1'b1),               // tv80s: nessuna cattura esterna pre-stream
-	.ss_mem_write (ss_do_save),
-	.ss_mem_read  (ss_do_load),
-	.ss_busy      (ss_busy),
-	.slot_empty   (ss_slot_empty),   // [FIX slot vuoto]
-	.ss_glob      (ssb[SS_IDX_GLOBAL]),
-	.m_din_en     (ss_m_din_en),
-	.m_din_data   (ss_m_din_data),
-	.s_din_en     (ss_s_din_en),
-	.s_din_data   (ss_s_din_data),
-	.ss_irq       (ss_irq68),
-	.ss_reset     (ss_reset68),
-	.ss_pause     (ss_pause68),
-	.ss_cpu_exec  (ss_cpu_exec68),
-	.ss_restore_done (),
-	.ss_state_out (ss_state_dbg)
+// ---- (SS7) savestate esterno dei due 68000: m68k_ss_seq a sequenza (clean room); sezione = 4 parole su SS_IDX_GLOBAL
+wire         ss68_pause;
+wire         ss68_sec_rd, ss68_sec_wr;
+wire [15:0]  ss68_sec_wdata;
+
+m68k_ss_seq #(.N(2), .WIN_BASE(24'hFF0000), .H_SCR(24'hFF0040)) u_ss68k (
+	.clk(clk), .rst(reset),
+	.ss_save(ss_save), .ss_load(ss_load), .paused(paused_real), .ss_busy(ss_busy), .slot_empty(ss_slot_empty),
+	.ss_pause(ss68_pause), .ss_mem_write(ss_do_save), .ss_mem_read(ss_do_load),
+	.sec_word(ss68_sec_word), .sec_rd(ss68_sec_rd), .sec_wr(ss68_sec_wr), .sec_wdata(ss68_sec_wdata),
+	.cpu_as_n({sub_bus_asn, main_bus_asn}),
+	.cpu_rw({sub_bus_rnw, main_bus_rnw}),
+	.cpu_fc({sub_fc, main_fc}),
+	.cpu_dout({sub_bus_dout, main_bus_dout}),
+	.cpu_in_reset({reset | (HOLD_SUB_IN_RESET ? 1'b1 : ~cpua_ctrl_reg[0]), reset}),
+	.cpu_exec({ss68_s_exec, ss68_m_exec}), .cpu_ovr({ss68_s_ovr, ss68_m_ovr}), .cpu_sspsel({ss68_s_ssp, ss68_m_ssp}),
+	.cpu_word(ss68_word), .cpu_ipl7({ss68_s_i7, ss68_m_i7}), .cpu_iplhide({ss68_s_hide, ss68_m_hide}),
+	.cpu_soft_reset({ss68_s_srst, ss68_m_srst}),
+	.state_o(), .phase_o(), .cpu_sel_o()
+);
+
+ss68_sec_slave #(.SS_IDX(SS_IDX_GLOBAL), .N_WORDS(4)) u_ss68k_sec (
+	.clk(clk), .ssbus(ssb[SS_IDX_GLOBAL]),
+	.word(ss68_sec_word), .rd(ss68_sec_rd), .wr(ss68_sec_wr), .wdata(ss68_sec_wdata)
 );
 // [SS-HOOK] la pausa resta alta anche durante replay YM e handler Z80
-assign ss_pause_out = ss_pause68 | ss_ym_replay_busy;
+assign ss_pause_out = ss68_pause | ss_ym_replay_busy;
 
 // --- Gate DDR fra adapter audio (master gioco) e memory_stream (master SS) ---
 wire  [7:0] audio_DDRAM_BURSTCNT;
@@ -1533,8 +1562,8 @@ save_state_data #(.COUNT(SS_MS_COUNT)) u_save_state (
 	.clk        (clk),
 	.reset      (reset),
 	.ddr        (ss_ddr),
-	.read_start (ss_do_load),
-	.write_start(ss_do_save),
+	.read_start (ss_do_load_q),
+	.write_start(ss_do_save_q),
 	.index      (ss_slot),
 	.busy       (ss_busy),
 	.slot_empty (ss_slot_empty),   // [FIX slot vuoto]

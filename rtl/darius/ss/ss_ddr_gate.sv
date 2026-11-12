@@ -1,6 +1,6 @@
-/*  This file is part of BoogieWings_MiSTer.
+/*  This file is part of Darius_MiSTer.
     GPL-3.
-    Author: Umberto Parisi (rmonc79)
+    Author: Umberto Parisi (rmonic79)
 */
 
 //============================================================================
